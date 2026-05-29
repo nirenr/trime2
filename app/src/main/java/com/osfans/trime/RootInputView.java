@@ -504,12 +504,7 @@ public class RootInputView extends FrameLayout {
             mInputView.invalidateComposingKeys();
     }
 
-    public void setTheme(String theme) {
-        removeAllViews();
-        initView(getContext());
-    }
-
-    public void setStyle(String theme) {
+    public void initView() {
         removeAllViews();
         initView(getContext());
     }
