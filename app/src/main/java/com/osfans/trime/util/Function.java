@@ -45,6 +45,7 @@ import com.osfans.trime.Config;
 import com.osfans.trime.TrimeService;
 import com.osfans.trime.VivoGpt;
 import com.osfans.trime.core.DataManager;
+import com.osfans.trime.core.Rime;
 import com.osfans.trime.dialog.DeployDialog;
 
 import org.luaj.LuaTable;
@@ -520,11 +521,11 @@ public class Function {
             case "deploy":
                 new DeployDialog(context).show(context.getToken());
                 break;
+            case "sync":
+                Rime.syncRimeUserData();
+                break;
             case "broadcast":
-                if(option.equals("com.osfans.trime.action.DEPLOY"))
-                    new DeployDialog(context).show(context.getToken());
-                else
-                    context.sendBroadcast(new Intent(option)); //廣播
+                context.sendBroadcast(new Intent(option)); //廣播
                 break;
             case "add_phrase":
                 TrimeService.getInstance().addPhrase(option); //新建短语
