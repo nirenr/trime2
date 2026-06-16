@@ -690,8 +690,11 @@ public class TrimeService extends InputMethodService {
         if (TextUtils.isEmpty(text)) return;
         lastCommittedText = text;
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null) ic.commitText(text, 1);
-        ThemeManager.callFunction("commitText", text);
+        if (ic != null) {
+          if (ic.commitText(text, 1) == true) {
+            ThemeManager.callFunction("commitText", text);
+          }
+        }
     }
 
     public void commitTextAndClearComposition(CharSequence text) {
