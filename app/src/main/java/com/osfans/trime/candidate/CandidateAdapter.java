@@ -40,7 +40,7 @@ public class CandidateAdapter extends RecyclerView.Adapter<CandidateAdapter.Cand
     private int mIdx;
     private int oldIdx;
     private final Drawable mCandidatePressedBackground;
-    private final Handler mHandler=new Handler();
+    private final Handler mHandler = new Handler();
 
     public CandidateAdapter(ArrayList<CandidateItem> data) {
         this.mData = data;
@@ -148,14 +148,14 @@ public class CandidateAdapter extends RecyclerView.Adapter<CandidateAdapter.Cand
     public void onBindViewHolder(@NonNull CandidateAdapter.CandidateViewHolder holder, int position) {
         final CandidateItem data = mData.get(position);
         // 处理注释为空的情况，隐藏 View 节省空间
-        if (TextUtils.isEmpty(data.getComment())|| Config.is_hide_comment()) {
+        if (!hasComment(mData) || Config.is_hide_comment()) {
             holder.tvComment.setVisibility(View.GONE);
         } else {
             holder.tvComment.setVisibility(View.VISIBLE);
             holder.tvComment.setText(data.getComment());
         }
         holder.tvText.setText(data.getText());
-        if(data.getText().length()>32){
+        if (data.getText().length() > 32) {
             holder.tvText.setMaxWidth(TrimeService.getInstance().getWidth());
             holder.tvText.setEllipsize(TextUtils.TruncateAt.MARQUEE);
         } else {
@@ -186,6 +186,17 @@ public class CandidateAdapter extends RecyclerView.Adapter<CandidateAdapter.Cand
         }
     }
 
+    private boolean hasComment(ArrayList<CandidateItem> data) {
+        int step = data.size() / 16;
+        if (step == 0)
+            step = 1;
+        for (int i = 0; i < data.size(); i += step) {
+            if (!TextUtils.isEmpty(data.get(i).getComment()))
+                return true;
+        }
+        return false;
+    }
+
     private void loadNextPage() {
         if (mIsLoading) return;
         mIsLoading = true;
@@ -209,7 +220,7 @@ public class CandidateAdapter extends RecyclerView.Adapter<CandidateAdapter.Cand
         oldIdx = 0;
         mData.clear();
         mData.addAll(next);
-        if(!next.isEmpty())
+        if (!next.isEmpty())
             Rime.highlightRimeCandidate(next.get(0).getIndex());
         notifyDataSetChanged();
     }
@@ -262,7 +273,7 @@ public class CandidateAdapter extends RecyclerView.Adapter<CandidateAdapter.Cand
     }
 
     public void setIdx(int idx) {
-        if(idx<0||idx>=getItemCount()-1)
+        if (idx < 0 || idx >= getItemCount() - 1)
             return;
         mIdx = idx;
         scrollToIdx();

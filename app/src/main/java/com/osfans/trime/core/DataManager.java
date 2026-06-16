@@ -18,7 +18,7 @@ import com.androlua.LuaUtil;
 import com.osfans.trime.BuildConfig;
 import com.osfans.trime.Config;
 import com.osfans.trime.TrimeApplication;
-import timber.log.Timber;
+
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -57,7 +57,6 @@ public class DataManager {
         // 初始化 dataDir
         Context context = getAppContext();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            Timber.d("Using device protected storage");
             dataDir = context.createDeviceProtectedStorageContext().getDataDir();
         } else {
             dataDir = new File(context.getApplicationInfo().dataDir);

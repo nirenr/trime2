@@ -7,7 +7,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
-import timber.log.Timber;
+
 
 /**
  * Implementation of RimeLifecycle, handling state transitions and observer notification.
@@ -62,7 +62,7 @@ public class RimeLifecycleImpl implements RimeLifecycle {
 
         // 2. Perform state update
         if (currentState.compareAndSet(oldState, newState)) {
-            Timber.d("RimeLifecycle transition: %s -> %s", oldState, newState);
+            //Timber.d("RimeLifecycle transition: %s -> %s", oldState, newState);
 
             // 3. Handle cleanup on STOPPED
             if (newState == State.STOPPED) {
@@ -75,7 +75,7 @@ public class RimeLifecycleImpl implements RimeLifecycle {
                 try {
                     observer.onStateChange(newState);
                 } catch (Exception e) {
-                    Timber.e(e, "Observer failed to handle state change to %s", newState);
+                    //Timber.e(e, "Observer failed to handle state change to %s", newState);
                 }
             }
         }

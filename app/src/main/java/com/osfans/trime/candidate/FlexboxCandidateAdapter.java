@@ -104,7 +104,7 @@ public class FlexboxCandidateAdapter extends RecyclerView.Adapter<FlexboxCandida
     @Override
     public void onBindViewHolder(@NonNull FlexboxCandidateAdapter.CandidateViewHolder holder, int position) {
         final CandidateItem data = mData.get(position);
-        if (TextUtils.isEmpty(data.getComment())|| Config.is_hide_comment()) {
+        if (!hasComment(mData) || Config.is_hide_comment()) {
             holder.tvComment.setVisibility(View.GONE);
         } else {
             holder.tvComment.setVisibility(View.VISIBLE);
@@ -128,6 +128,17 @@ public class FlexboxCandidateAdapter extends RecyclerView.Adapter<FlexboxCandida
             // 使用 post 避免在布局阶段刷新
             holder.itemView.post(this::loadNextPage);
         }
+    }
+
+    private boolean hasComment(ArrayList<CandidateItem> data) {
+        int step = data.size() / 16;
+        if (step == 0)
+            step = 1;
+        for (int i = 0; i < data.size(); i += step) {
+            if (!TextUtils.isEmpty(data.get(i).getComment()))
+                return true;
+        }
+        return false;
     }
 
     private void loadNextPage() {

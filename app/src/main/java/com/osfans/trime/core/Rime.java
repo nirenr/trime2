@@ -34,7 +34,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-import timber.log.Timber;
+
 
 
 public class Rime implements RimeApi, RimeLifecycleOwner {
@@ -199,7 +199,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
         try {
             return dispatcher.submit(block);
         } catch (Exception e) {
-            Timber.e(e, "Rime context execution failed.");
+            //Timber.e(e, "Rime context execution failed.");
             return null; // Handle error appropriately
         }
     }
@@ -267,7 +267,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
         boolean composing = isComposing();
         if(BuildConfig.DEBUG)Log.w("rime", "simulateKeySequence:old1 "+composing);
         return Boolean.TRUE.equals(withRimeContext(() -> {
-            Timber.d("simulateKeySequence: " + sequence);
+            //Timber.d("simulateKeySequence: " + sequence);
             String old = compositionCached.getCommitTextPreview();
             if(BuildConfig.DEBUG)Log.w("rime", "simulateKeySequence:old2 "+old );
             boolean success = simulateRimeKeySequence(sequence);
@@ -298,7 +298,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
             } else {
                 return false;
             }
-        }));//.also(result -> Timber.d("simulateKeySequence " + (result ? "success" : "failed")));
+        }));//.also(result -> //Timber.d("simulateKeySequence " + (result ? "success" : "failed")));
     }
 
     @Override
@@ -435,19 +435,19 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
 
     // --- Private Helper Methods ---
 
-    @SuppressLint("StringFormatInTimber")
+    @SuppressLint("StringFormatIn//Timber")
     public static void startRime(boolean fullCheck) {
         DataManager.sync();
         String sharedDataDir = DataManager.getSharedDataDir().getAbsolutePath();
         String userDataDir = DataManager.getUserDataDir().getAbsolutePath();
-        Timber.d(
-                String.format(Locale.CHINA,
-                        "Starting rime with: sharedDataDir: %s userDataDir: %s fullCheck: %b",
-                        sharedDataDir,
-                        userDataDir,
-                        fullCheck
-                )
-        );
+        //Timber.d(
+        //        String.format(Locale.CHINA,
+        //                "Starting rime with: sharedDataDir: %s userDataDir: %s fullCheck: %b",
+        //                sharedDataDir,
+        //                userDataDir,
+        //                fullCheck
+        //        )
+        //);
         startupRime(sharedDataDir, userDataDir, BuildConfig.BUILD_VERSION_NAME, fullCheck);
     }
 
@@ -508,8 +508,8 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
         // 1. 调用静态工厂方法创建消息
         RimeMessage<?> message = RimeMessage.nativeCreate(type, params);
 
-        // 2. 日志记录 (Timber 在 Java 中推荐使用占位符或字符串拼接)
-        Timber.d("Handling %s", message);
+        // 2. 日志记录 (//Timber 在 Java 中推荐使用占位符或字符串拼接)
+        //Timber.d("Handling %s", message);
 
         // 3. 遍历并执行所有处理器
         // 假设 rimeMessageHandlers 是一个 List<Consumer<RimeMessage<?>>>
@@ -657,7 +657,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
 
     public void startup() {
         if (lifecycleImpl.getCurrentState() != RimeLifecycle.State.STOPPED) {
-            Timber.w("Skip starting rime: not at stopped state!");
+            //Timber.w("Skip starting rime: not at stopped state!");
             return;
         }
         if (appContext.isStorageAvailable()) {
@@ -669,14 +669,14 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
 
     public void finalize() {
         if (lifecycleImpl.getCurrentState() != RimeLifecycle.State.READY) {
-            Timber.w("Skip stopping rime: not at ready state!");
+            //Timber.w("Skip stopping rime: not at ready state!");
             return;
         }
         lifecycleImpl.emitState(RimeLifecycle.State.STOPPING);
-        Timber.i("Rime finalize()");
+        //Timber.i("Rime finalize()");
         List<Runnable> pendingJobs = dispatcher.stop();
         if (!pendingJobs.isEmpty()) {
-            Timber.w(pendingJobs.size() + " job(s) didn't get a chance to run!");
+            //Timber.w(pendingJobs.size() + " job(s) didn't get a chance to run!");
         }
         lifecycleImpl.emitState(RimeLifecycle.State.STOPPED);
         unregisterRimeMessageHandler(mMessageHandler);

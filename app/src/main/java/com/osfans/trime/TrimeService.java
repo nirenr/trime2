@@ -13,6 +13,7 @@ import android.content.ClipboardManager;
 import android.content.res.Configuration;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.inputmethodservice.InputMethodService;
 import android.os.Build;
 import android.os.Handler;
@@ -31,6 +32,7 @@ import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.Window;
 import android.view.WindowManager;
+import android.view.inputmethod.CursorAnchorInfo;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
@@ -57,6 +59,7 @@ import com.osfans.trime.dialog.SchemaGroupDialog;
 import com.osfans.trime.dialog.StyleDialog;
 import com.osfans.trime.dialog.ThemeDialog;
 import com.osfans.trime.enums.InlineModeType;
+import com.osfans.trime.enums.WindowsPositionType;
 import com.osfans.trime.keyboard.FloatKeyboard;
 import com.osfans.trime.keyboard.ModifierState;
 import com.osfans.trime.theme.ThemeManager;
@@ -114,6 +117,11 @@ public class TrimeService extends InputMethodService {
     private Globals globals;
     private Speech mSpeech;
     private boolean mShowComposingText;
+    private int mCurrSelEnd;
+    private int mCurrSelStart;
+    private int previousIdx;
+    private int nextIdx;
+    private RectF mPopupRectF=new RectF();
 
     // 3. 静态访问器与生命周期
     public static TrimeService getInstance() {
@@ -337,6 +345,28 @@ public class TrimeService extends InputMethodService {
         outInsets.touchableInsets = Insets.TOUCHABLE_INSETS_REGION;
     }
 
+    @Override
+    public void onStartInputView(EditorInfo info, boolean restarting) {
+        super.onStartInputView(info, restarting);
+
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null) {
+            // 核心代码：必须请求明确的监听模式
+            // CURSOR_UPDATE_MONITOR: 持续监听光标和锚点位置变化
+            // CURSOR_UPDATE_IMMEDIATE: 立即请求一次当前的位置
+            ic.requestCursorUpdates(InputConnection.CURSOR_UPDATE_MONITOR);
+        }
+    }
+
+    @Override
+    public void onFinishInputView(boolean finishingInput) {
+        super.onFinishInputView(finishingInput);
+        InputConnection ic = getCurrentInputConnection();
+        if (ic != null) {
+            // 退出时显式关闭监听，防止内存泄漏或状态错乱
+            ic.requestCursorUpdates(0);
+        }
+    }
 
     @Override
     public void onStartInput(EditorInfo attribute, boolean restarting) {
@@ -932,6 +962,70 @@ public class TrimeService extends InputMethodService {
             if (cs == null || !TextUtils.isEmpty(s)) ic.setComposingText(s, 1);
         }
     }
+
+    public void updateComposing() {
+        if (inlinePreedit != InlineModeType.INLINE_NONE) {
+            mHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    String s = null;
+                    switch (inlinePreedit) {
+                        case INLINE_PREVIEW:
+                            s = mRime.getComposingText();
+                            break;
+                        case INLINE_COMPOSITION:
+                            s = mRime.getCompositionCached().getPreedit();
+                            break;
+                        case INLINE_INPUT:
+                            s = Rime.getRimeRawInput();
+                            break;
+                    }
+                    if (s == null) s = "";
+                    InputConnection ic = getCurrentInputConnection();
+                    if (ic != null) {
+                        CharSequence cs = ic.getSelectedText(0);
+                        if (cs == null || !TextUtils.isEmpty(s)) ic.setComposingText(s, 1);
+                    }
+                }
+            });
+        }
+    }
+
+
+    @Override
+    public void onUpdateCursorAnchorInfo(CursorAnchorInfo cursorAnchorInfo) {
+        mRootInputView.onUpdateCursorAnchorInfo(cursorAnchorInfo);
+    }
+
+
+    @Override
+    public void onUpdateSelection(
+            int oldSelStart,
+            int oldSelEnd,
+            int newSelStart,
+            int newSelEnd,
+            int candidatesStart,
+            int candidatesEnd) {
+        super.onUpdateSelection(
+                oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd);
+        if ((candidatesEnd != -1) && ((newSelStart != candidatesEnd) || (newSelEnd != candidatesEnd))) {
+            //移動光標時，更新候選區
+            if ((newSelEnd < candidatesEnd) && (newSelEnd >= candidatesStart)) {
+                int n = newSelEnd - candidatesStart;
+                mRime.setRimeCaretPos(n);
+                updateComposing();
+            }
+        }
+        if ((candidatesStart == -1 && candidatesEnd == -1) && (newSelStart == 0 && newSelEnd == 0)) {
+            //上屏後，清除候選區
+            escape();
+        }
+        mCurrSelEnd = newSelEnd;
+        mCurrSelStart = newSelStart;
+        previousIdx = 0;
+        nextIdx = 0;
+    }
+
 
     // 7. 视图状态管理与更新 (View State Management)
 

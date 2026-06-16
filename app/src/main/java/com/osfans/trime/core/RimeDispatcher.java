@@ -11,7 +11,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import timber.log.Timber;
+
 
 /**
  * RimeDispatcher is a wrapper of a single-threaded executor that runs RimeController.
@@ -79,7 +79,7 @@ public final class RimeDispatcher {
         public void run() {
             long delta = getDelta();
             if (delta > JOB_WAITING_LIMIT) {
-                Timber.w("%s has waited %d ms to get run since created!", toString(), delta);
+                //Timber.w("%s has waited %d ms to get run since created!", toString(), delta);
             }
             started = true;
             runnable.run();
@@ -126,14 +126,12 @@ public final class RimeDispatcher {
      * and begins processing the job queue.
      */
     public void start() {
-        Timber.d("RimeDispatcher start()");
 
         // Launch the main loop on the single thread
         internalExecutor.execute(() -> {
             synchronized (lifecycleLock) {
                 if (isRunning.compareAndSet(false, true)) {
                     try {
-                        Timber.d("nativeStartup()");
                         controller.nativeStartup();
 
                         // Main message loop: runs until 'isRunning' is set to false
@@ -150,7 +148,6 @@ public final class RimeDispatcher {
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt(); // Restore interrupt status
                     } finally {
-                        Timber.i("nativeFinalize()");
                         controller.nativeFinalize();
                         // Executor is not shut down here, just the loop breaks.
                     }
@@ -166,7 +163,6 @@ public final class RimeDispatcher {
      * @return A list of the underlying Runnables that were not executed (remaining jobs).
      */
     public List<Runnable> stop() {
-        Timber.i("RimeDispatcher stop()");
         if (isRunning.compareAndSet(true, false)) {
             // 1. Offer the sentinel to break the blocking 'queue.take()' in the main loop
             queue.offer(WrappedRunnable.EMPTY);
@@ -198,7 +194,6 @@ public final class RimeDispatcher {
                 // We use future.get() to block until the shutdown-cleanup task is done.
                 return future.get();
             } catch (InterruptedException | ExecutionException e) {
-                Timber.e(e, "Error during RimeDispatcher stop()");
                 // Attempt a forced shutdown if waiting failed
                 internalExecutor.shutdownNow();
                 // Return what we can, likely an empty list due to the exception

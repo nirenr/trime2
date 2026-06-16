@@ -50,6 +50,7 @@ import com.osfans.trime.candidate.CandidatesManager;
 import com.osfans.trime.core.CandidateItem;
 import com.osfans.trime.core.Rime;
 import com.osfans.trime.core.RimeProto;
+import com.osfans.trime.enums.WindowsPositionType;
 import com.osfans.trime.theme.KeyStyle;
 import com.osfans.trime.theme.Style;
 import com.osfans.trime.theme.ThemeManager;
@@ -94,6 +95,7 @@ public class Composition extends TextView {
     private boolean mSingle;
     private boolean end_top;
     private RimeProto.Context mRimeContext;
+    private WindowsPositionType winPos=WindowsPositionType.FIXED;
 
     public Composition(Context context) {
         super(context);
@@ -311,6 +313,10 @@ public class Composition extends TextView {
         end_top = b;
     }
 
+    public WindowsPositionType getWindowsPosition() {
+        return winPos;
+    }
+
     private class CloudSpan2 extends ClickableSpan {
         CharSequence index;
         Typeface tf;
@@ -514,6 +520,7 @@ public class Composition extends TextView {
         // 1. 获取所有相关的 KeyStyle 定义 (逻辑分层)
         Style theme = ThemeManager.getStyle();
         KeyStyle style = theme.getKeyStyle("composition");
+        winPos=WindowsPositionType.fromString(style.getString("position"));
         KeyStyle mPressedStyle = style.getKeyStyle("pressed", style);
 
         KeyStyle mCandidateStyle = theme.getKeyStyle("candidate");

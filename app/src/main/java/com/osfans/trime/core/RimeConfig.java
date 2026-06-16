@@ -5,7 +5,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-import timber.log.Timber;
+
 
 /**
  * Rime Configuration Access Class.
@@ -90,7 +90,7 @@ public final class RimeConfig implements AutoCloseable {
             if (value == null) {
                 // Log the failure to retrieve the expected item
                 String stringValue = getString(path);
-                Timber.w("Failed to get value '%s' as expected on path '%s'", stringValue, path);
+                //Timber.w("Failed to get value '%s' as expected on path '%s'", stringValue, path);
                 continue;
             }
             values.add(value);

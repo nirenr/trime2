@@ -61,12 +61,16 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import io.noties.markwon.Markwon;
+
 /**
  * 實現打開指定程序、打開 輸入法全局設置對話框等功能
  */
 public class Function {
     private static String TAG = Function.class.getSimpleName();
     private static SparseArray<String> sApplicationLaunchKeyCategories;
+    // 2. 创建 Markwon 实例（传入 Context）
+    private static final Markwon markwon = Markwon.create(LuaApplication.getInstance());
 
     static {
         sApplicationLaunchKeyCategories = new SparseArray<String>();
@@ -335,6 +339,7 @@ public class Function {
                             public void run() {
                                 if (result == null) {
                                     dlg.getButton(DialogInterface.BUTTON1).setEnabled(true);
+                                    markwon.setMarkdown(tv, tv.getText().toString());
                                     return;
                                 }
                                 tv.append(result.text);
@@ -385,7 +390,8 @@ public class Function {
                                 } else {
                                     tv.setTextColor(0xff000000);
                                 }
-                                tv.setText(result.text);
+                                markwon.setMarkdown(tv, result.text);
+                                //tv.setText(result.text);
                                 tv.setShowSoftInputOnFocus(false);
                                 context.showWidthDialog(new AlertDialog.Builder(displayContext, Config.getDialogTheme())
                                         .setTitle(option)
@@ -453,7 +459,8 @@ public class Function {
                         } else {
                             tv.setTextColor(0xff000000);
                         }
-                        tv.setText(result.text);
+                        //tv.setText(result.text);
+                        markwon.setMarkdown(tv, result.text);
                         tv.setShowSoftInputOnFocus(false);
 
                         context.showWidthDialog(new AlertDialog.Builder(displayContext, Config.getDialogTheme())

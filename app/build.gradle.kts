@@ -42,8 +42,8 @@ android {
         applicationId = "com.nirenr.trime"
         minSdk = 21
         targetSdk = 35
-        versionCode = 74
-        versionName = "0.7.4"
+        versionCode = 77
+        versionName = "0.7.7"
 
         multiDexEnabled = true
         buildConfigField("String", "BUILDER", "\"${project.builder}\"")
@@ -171,6 +171,11 @@ android.applicationVariants.all {
 }
 
 dependencies {
+    // Markwon 核心库（必须引入）
+    implementation("io.noties.markwon:core:4.6.2")
+    // 如果你后续需要渲染像常用的：删除线、表格、任务列表等扩展语法（可选）
+    // implementation "io.noties.markwon:ext-strikethrough:4.6.2"
+    // implementation "io.noties.markwon:ext-tables:4.6.2"
     implementation(files("libs/com.vivo.speechsdk.asr_tts_5.2.4.00_external.aar"))
     ksp(project(":codegen"))
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar", "*.aar"))))
@@ -195,7 +200,7 @@ dependencies {
     implementation(libs.flexbox)
     //implementation(libs.bravh)
     //implementation(libs.kaml)
-    implementation(libs.timber)
+    //implementation(libs.timber)
     //implementation(libs.xxpermissions)
     //ksp(libs.kotlin.inject.compiler)
     //implementation(libs.kotlin.inject.runtime)

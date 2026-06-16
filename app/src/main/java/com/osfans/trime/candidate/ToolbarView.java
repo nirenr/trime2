@@ -13,6 +13,7 @@ import android.view.ViewGroup;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 
+import com.osfans.trime.Config;
 import com.osfans.trime.Event;
 import com.osfans.trime.Key;
 import com.osfans.trime.TrimeService;
@@ -22,6 +23,7 @@ import com.osfans.trime.keyboard.KeyView;
 import com.osfans.trime.theme.KeyStyle;
 import com.osfans.trime.theme.Style;
 import com.osfans.trime.theme.ThemeManager;
+import com.osfans.trime.util.Function;
 
 import org.luaj.LuaTable;
 import org.luaj.LuaValue;
@@ -73,8 +75,8 @@ public class ToolbarView extends LinearLayout implements View.OnClickListener {
         itemsLayout.setGravity(Gravity.CENTER);
         mListView.addView(itemsLayout, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         LuaValue hide = mToolbarStyle.get("hide");
-         mHide = new KeyView(getContext(), hide.istable()?mToolbarStyle.getKeyStyle("hide", mToolbarStyle.getKeyStyle("key", ThemeManager.getStyle().getKeyStyle("key"))):mToolbarStyle.getKeyStyle("key", ThemeManager.getStyle().getKeyStyle("key")));
-         if (hide.istable()) {
+        mHide = new KeyView(getContext(), hide.istable() ? mToolbarStyle.getKeyStyle("hide", mToolbarStyle.getKeyStyle("key", ThemeManager.getStyle().getKeyStyle("key"))) : mToolbarStyle.getKeyStyle("key", ThemeManager.getStyle().getKeyStyle("key")));
+        if (hide.istable()) {
             mHide.setText(hide.get("text").optjstring("▽"));
         } else {
             mHide.setText(hide.optjstring("▽"));
@@ -86,7 +88,7 @@ public class ToolbarView extends LinearLayout implements View.OnClickListener {
         root.addView(mListView, new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height, 1));
         root.addView(mHide, new LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, height));
         try {
-            if(mToolbarStyle.get("schema_switches").optboolean(false)&&!Rime.getCurrentRimeSchema().equals(".default")) {
+            if (mToolbarStyle.get("schema_switches").optboolean(false) && !Rime.getCurrentRimeSchema().equals(".default")) {
                 RimeSchema currentRimeSchema = new RimeSchema(Rime.getCurrentRimeSchema());
                 List<RimeSchema.Switch> switches = currentRimeSchema.getSwitches();
                 for (RimeSchema.Switch aSwitch : switches) {
@@ -122,14 +124,57 @@ public class ToolbarView extends LinearLayout implements View.OnClickListener {
             LuaValue o = keys.get(i + 1);
             if (o.istable()) {
                 LuaValue s = o.get("style");
-                KeyStyle style=mKeyStyle;
-                if(s.isstring()){
-                    style=ThemeManager.getStyle().getKeyStyle(s.tojstring(),mKeyStyle);
+                KeyStyle style = mKeyStyle;
+                if (s.isstring()) {
+                    style = ThemeManager.getStyle().getKeyStyle(s.tojstring(), mKeyStyle);
                 }
-                KeyView key = new KeyView(getContext(), o.get("click").isnil() ? new Key(new Event(o)) : new Key(o), style);
-                itemsLayout.addView(key, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-                key.setMinimumWidth(height);
-                mKeys.add(key);
+                if (o.get("options").istable()) {
+                    RimeSchema.Switch aSwitch = new RimeSchema.Switch(o.get("name").optjstring(""), o.get("options").opttable(new LuaTable()).stringValues(), o.get("reset").optint(0), o.get("states").opttable(new LuaTable()).stringValues());
+                    KeyView key = new KeyView(getContext(), mKeyStyle) {
+                        @Override
+                        public void invalidateKey() {
+                            super.invalidateKey();
+                            setText(aSwitch.getState());
+                        }
+                    };
+                    key.setOnClickListener(new OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            aSwitch.toggleOption();
+                            switch (aSwitch.getName()) {
+                                case "schema_group":
+                                    String groupsId = aSwitch.getOption();
+                                    Config.setGroup(groupsId);
+                                    mTrime.restart();
+                                    break;
+                                case "schema_id":
+                                    String selectedId = aSwitch.getOption();
+                                    Rime.selectRimeSchema(selectedId); // 切换方案
+                                    Function.saveString(mTrime, "select_schema_id", selectedId);
+                                    break;
+                                case "theme":
+                                    mTrime.setTheme(aSwitch.getOption());
+                                    break;
+                                case "style":
+                                    mTrime.setStyle(aSwitch.getOption());
+                                    break;
+                                case "keyboard":
+                                    mTrime.setKeyboard(aSwitch.getOption());
+                                    break;
+
+                            }
+                        }
+                    });
+                    key.setText(aSwitch.getState());
+                    itemsLayout.addView(key, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                    key.setMinimumWidth(height);
+                    mKeys.add(key);
+                } else {
+                    KeyView key = new KeyView(getContext(), o.get("click").isnil() ? new Key(new Event(o)) : new Key(o), style);
+                    itemsLayout.addView(key, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                    key.setMinimumWidth(height);
+                    mKeys.add(key);
+                }
             } else if (o.isstring()) {
                 KeyView key = new KeyView(getContext(), new Key(o.tojstring()), mKeyStyle);
                 itemsLayout.addView(key, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));

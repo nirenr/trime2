@@ -7,6 +7,8 @@ package com.osfans.trime;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.graphics.RectF;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.TextUtils;
@@ -18,6 +20,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
+import android.view.inputmethod.CursorAnchorInfo;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -29,6 +32,7 @@ import com.osfans.trime.candidate.CandidatesManager;
 import com.osfans.trime.candidate.ExpandedCandidateView;
 import com.osfans.trime.core.CandidateItem;
 import com.osfans.trime.core.Rime;
+import com.osfans.trime.enums.WindowsPositionType;
 import com.osfans.trime.keyboard.ClipboardKeyboardView;
 import com.osfans.trime.keyboard.FloatKeyboard;
 import com.osfans.trime.keyboard.KeyView;
@@ -63,6 +67,11 @@ public class RootInputView extends FrameLayout {
     private ClipboardKeyboardView mClipboardKeyboardView;
     private int mStartIdx = 0;
     private int mCompositionMinLength;
+    private RectF mPopupRectF = new RectF();
+    private WindowsPositionType winPos = WindowsPositionType.FIXED;
+    private int winX;
+    private int winY;
+    private int mMaxWidth;
 
     public RootInputView(@NonNull Context context) {
         super(context);
@@ -82,6 +91,8 @@ public class RootInputView extends FrameLayout {
 
     @SuppressLint({"ClickableViewAccessibility", "AppCompatCustomView"})
     private void initView(@NonNull Context context) {
+        mMaxWidth = TrimeService.getInstance().getMaxWidth();
+        boolean floatMode = Config.isFloatMode();
         setClipChildren(false);
         setClipToPadding(false);
         mHasComposition = ThemeManager.getStyle().hasKey("composition");
@@ -236,22 +247,90 @@ public class RootInputView extends FrameLayout {
         mRoot.setBackground(color.getBackground(0xffdddddd));
 
         mPreedit = new Composition(context) {
+            private int candSpacing = 0;
+            private int[] mParentLocation = new int[2];
+
             @Override
             protected void onSizeChanged(int w, int h, int oldw, int oldh) {
                 super.onSizeChanged(w, h, oldw, oldh);
                 if (isSelected())
                     return;
-                if (Config.isFloatMode()) {
+                if (winPos != WindowsPositionType.FIXED) {
+                    run();
+                } else if (floatMode) {
                     float targetY = mRoot.getY() - mPreedit.getHeight();
                     mPreedit.setTranslationY(targetY);
-                    mPreedit.setTranslationX(mRoot.getX());
+                    mPreedit.setTranslationX(mRoot.getX() + mCenterLayout.getX());
                 } else {
                     float targetY = mRoot.getTop() - mPreedit.getHeight();
                     mPreedit.setTranslationY(targetY);
                     mPreedit.setTranslationX(mCenterLayout.getX());
                 }
             }
+
+            public void run() {
+                int x = 0, y = 0;
+                mCandidateView.getLocationOnScreen(mParentLocation);
+                if (isWinFixed()/* || !cursorUpdated*/) {
+                    //setCandidatesViewShown(true);
+                    switch (winPos) {
+                        case TOP_RIGHT:
+                            x = mRoot.getWidth() - mPreedit.getWidth();
+                            y = candSpacing;
+                            break;
+                        case TOP_LEFT:
+                            x = mParentLocation[0];
+                            y = candSpacing;
+                            break;
+                        case BOTTOM_RIGHT:
+                            if (floatMode)
+                                x = mCenterLayout.getWidth() - mPreedit.getWidth() + (int) mRoot.getX()+ (int) mCenterLayout.getX();
+                            else
+                                x = mCenterLayout.getWidth() - mPreedit.getWidth() + (int) mCenterLayout.getX();
+                            y = mParentLocation[1] - mPreedit.getHeight() - candSpacing;
+                            break;
+                        case DRAG:
+                            x = winX;
+                            y = winY;
+                            break;
+                        case FIXED:
+                        case BOTTOM_LEFT:
+                        default:
+                            if (floatMode)
+                                x = (int) mRoot.getX();
+                            else
+                                x = (int) mCenterLayout.getX();
+                            y = mParentLocation[1] - mPreedit.getHeight() - candSpacing;
+                            break;
+                    }
+                } else {
+                    x = (int) mPopupRectF.left;
+                    if (winPos == WindowsPositionType.RIGHT
+                            || winPos == WindowsPositionType.RIGHT_UP) {
+                        x = (int) mPopupRectF.right;
+                    }
+                    y = (int) mPopupRectF.bottom + candSpacing;
+                    if (winPos == WindowsPositionType.LEFT_UP
+                            || winPos == WindowsPositionType.RIGHT_UP) {
+                        y =
+                                (int) mPopupRectF.top
+                                        - mPreedit.getHeight()
+                                        - candSpacing;
+                    }
+                }
+                if (x > mMaxWidth - mPreedit.getWidth()) {
+                    x = mMaxWidth - mPreedit.getWidth();
+                }
+                if (x < 0) x = 0;
+                if (y < 0) y = 0;
+                if (y > mParentLocation[1] - mPreedit.getHeight() - candSpacing) { //candSpacing爲負時，可覆蓋部分鍵盤
+                    y = mParentLocation[1] - mPreedit.getHeight() - candSpacing;
+                }
+                mPreedit.setTranslationY(y);
+                mPreedit.setTranslationX(x);
+            }
         };
+        winPos = mPreedit.getWindowsPosition();
         Style preeditColor = ThemeManager.getStyle().getStyle("preedit");
         mPreedit.setTextColor(preeditColor.getTextColor(0xffaaaaaa));
         mPreedit.setBackground(preeditColor.getBackground(0xff888888));
@@ -268,7 +347,7 @@ public class RootInputView extends FrameLayout {
         mCloud.setPadding(pd, pd, pd, pd);
         mCloud.setVisibility(View.INVISIBLE);
         mCloud.setText(" ");
-        addView(mRoot, new FrameLayout.LayoutParams(Config.isFloatMode() ? ViewGroup.LayoutParams.WRAP_CONTENT : ViewGroup.LayoutParams.MATCH_PARENT, ThemeManager.getHeight(), Gravity.BOTTOM));
+        addView(mRoot, new FrameLayout.LayoutParams(floatMode ? ViewGroup.LayoutParams.WRAP_CONTENT : ViewGroup.LayoutParams.MATCH_PARENT, ThemeManager.getHeight(), Gravity.BOTTOM));
         addView(mPreedit, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.LEFT));
         addView(mCloud, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.RIGHT));
         showToolbarView(true);
@@ -284,7 +363,7 @@ public class RootInputView extends FrameLayout {
                         insets.getSystemWindowInsetRight(),
                         insets.getSystemWindowInsetBottom()
                 );*/
-                if (!Config.isFloatMode() && mRoot != null) {
+                if (!floatMode && mRoot != null) {
                     ViewGroup.LayoutParams lp = mRoot.getLayoutParams();
                     lp.height = ThemeManager.getHeight() + insets.getSystemWindowInsetBottom();
                     mRoot.setLayoutParams(lp);
@@ -329,13 +408,13 @@ public class RootInputView extends FrameLayout {
             if (mRightLayout != null)
                 mRightLayout.setVisibility(GONE);
         }
-        if (Config.isFloatMode()) {
+        if (floatMode) {
             KeyView hide = mCandidateView.getToolbar().getHide();
             hide.setOnLongClickListener(new OnLongClickListener() {
                 @Override
                 public boolean onLongClick(View v) {
                     setSelected(true);
-                    if (!Config.isFloatMode()) {
+                    if (!floatMode) {
                         mPreedit.setVisibility(View.VISIBLE);
                         mPreedit.setText("默认高度");
                         mPreedit.setY(getHeight() - ThemeManager.getRawContentHeight() - mPreedit.getHeight());
@@ -421,9 +500,11 @@ public class RootInputView extends FrameLayout {
                 @Override
                 public boolean onLongClick(View v) {
                     setSelected(true);
-                    if (!Config.isFloatMode()) {
+                    if (!floatMode) {
                         mPreedit.setVisibility(View.VISIBLE);
                         mPreedit.setText("默认高度");
+                        mPreedit.setTranslationX(0);
+                        mPreedit.setTranslationY(0);
                         mPreedit.setY(getHeight() - ThemeManager.getRawContentHeight() - mPreedit.getHeight());
                     }
                     return true;
@@ -477,8 +558,7 @@ public class RootInputView extends FrameLayout {
                 }
             });
         }
-
-        if(Rime.getRimeOption("_hide_candidate"))
+        if (Rime.getRimeOption("_hide_candidate"))
             mCandidateView.setVisibility(GONE);
         else
             mCandidateView.setVisibility(VISIBLE);
@@ -597,7 +677,7 @@ public class RootInputView extends FrameLayout {
 
                 // 核心优化：使用 setTranslationY 代替 LayoutParams
                 // 这只会触发重绘（Repaint），不会触发重布局（Relayout），性能提升巨大
-                 /*if(Config.isFloatMode()) {
+                 /*if(floatMode) {
                     float targetY = mRoot.getY() - mPreedit.getHeight();
                     mPreedit.setTranslationY(targetY);
                     mPreedit.setTranslationX(mRoot.getX());
@@ -706,11 +786,11 @@ public class RootInputView extends FrameLayout {
     }
 
     public void invalidateAllKeys() {
-         Config.set_hide_comment(Rime.getRimeOption("_hide_comment"));
+        Config.set_hide_comment(Rime.getRimeOption("_hide_comment"));
         Config.set_hide_key_hint(Rime.getRimeOption("_hide_key_hint"));
         if (mInputView != null) mInputView.invalidateAllKeys();
-        if (mCandidateView != null){
-            if(Rime.getRimeOption("_hide_candidate"))
+        if (mCandidateView != null) {
+            if (Rime.getRimeOption("_hide_candidate"))
                 mCandidateView.setVisibility(GONE);
             else
                 mCandidateView.setVisibility(VISIBLE);
@@ -820,6 +900,35 @@ public class RootInputView extends FrameLayout {
 
     public CandidateView getCandidateView() {
         return mCandidateView;
+    }
+
+
+    public void onUpdateCursorAnchorInfo(CursorAnchorInfo cursorAnchorInfo) {
+        if (cursorAnchorInfo == null)
+            return;
+        int i = cursorAnchorInfo.getComposingTextStart();
+        if ((winPos == WindowsPositionType.LEFT || winPos == WindowsPositionType.LEFT_UP) && i >= 0) {
+            mPopupRectF = cursorAnchorInfo.getCharacterBounds(i);
+        } else {
+            mPopupRectF.left = cursorAnchorInfo.getInsertionMarkerHorizontal();
+            mPopupRectF.top = cursorAnchorInfo.getInsertionMarkerTop();
+            mPopupRectF.right = mPopupRectF.left;
+            mPopupRectF.bottom = cursorAnchorInfo.getInsertionMarkerBottom();
+        }
+        if (cursorAnchorInfo.getMatrix() != null)
+            cursorAnchorInfo.getMatrix().mapRect(mPopupRectF);
+    }
+
+    private boolean isWinFixed() {
+        return winPos != WindowsPositionType.LEFT && winPos != WindowsPositionType.RIGHT && winPos != WindowsPositionType.LEFT_UP && winPos != WindowsPositionType.RIGHT_UP;
+    }
+
+    public void updateWindow(int offsetX, int offsetY) {
+        winPos = WindowsPositionType.DRAG;
+        winX = offsetX;
+        winY = offsetY;
+        mPreedit.setTranslationX(winX);
+        mPreedit.setTranslationY(winY);
     }
 
 

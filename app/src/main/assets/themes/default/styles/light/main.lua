@@ -338,7 +338,7 @@ composition = {
     show = true,
     text_color = 0xff222222,
     background = 0xaaffffff,
-    position = "fixed", -- 位置：left|right|left_up|right_up|fixed|bottom_left|bottom_right|top_left|top_right(left、right需要>=Android5.0)
+    position = "fixed", -- 位置：left|right|left_up|right_up|fixed|bottom_left|bottom_right|top_left|top_right
     min_length = 8, -- 最小词长,超过字数的显示在悬浮窗
     max_length = 10, -- 超过字数则换行
     sticky_lines = 0, -- 固顶行数

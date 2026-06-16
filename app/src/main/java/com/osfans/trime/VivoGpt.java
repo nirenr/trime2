@@ -228,6 +228,7 @@ public class VivoGpt {
             @Override
             public void onResponse(@NotNull Call call, @NotNull Response response) throws IOException {
                 BufferedReader stream = new BufferedReader(new InputStreamReader(response.body().byteStream()));
+                boolean think=true;
                 String line = stream.readLine();
                 while (line != null) {
                     try {

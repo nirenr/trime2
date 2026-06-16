@@ -33,9 +33,7 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Enumeration;
 import java.util.HashMap;
-import java.util.Hashtable;
 import java.util.Iterator;
 import java.util.Map;
 
@@ -108,7 +106,7 @@ public class LuajavaLib extends VarArgFunction {
     static final int LOADLIB = 5;
     static final int ASTABLE = 6;
     static final int INSTANCEOF = 7;
-    static final int override = 8;
+    static final int OVERRIDE = 8;
 
     static final String[] NAMES = {
             "bindClass",
@@ -218,7 +216,7 @@ public class LuajavaLib extends VarArgFunction {
                 case INSTANCEOF:
                     Class cls = args.arg(2).touserdata(Class.class);
                     return LuaValue.valueOf(cls.isInstance(args.checkuserdata(1)));
-                case override:
+                case OVERRIDE:
                     Class cls1 = args.arg(1).touserdata(Class.class);
                     return override(cls1,args.arg(2));
                 default:

@@ -9,7 +9,7 @@ import com.osfans.trime.core.DataManager;
 import com.osfans.trime.data.opencc.dict.Dictionary;
 import com.osfans.trime.data.opencc.dict.OpenCCDictionary;
 import com.osfans.trime.data.opencc.dict.TextDictionary;
-import timber.log.Timber;
+
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -99,7 +99,7 @@ public final class OpenCCDictManager {
         // preserve original file name
         File destFile = new File(getUserDir(), nameWithoutExtension + "." + Dictionary.Type.OCD2.getExt());
         OpenCCDictionary newDict = raw.toOpenCCDictionary(destFile);
-        Timber.d("Converted %s to %s", raw, newDict);
+        //Timber.d("Converted %s to %s", raw, newDict);
         return newDict;
     }
 
@@ -113,9 +113,9 @@ public final class OpenCCDictManager {
                 try {
                     OpenCCDictionary r = ((TextDictionary) d).toOpenCCDictionary();
                     long duration = System.currentTimeMillis() - startTime;
-                    Timber.d("Took %d ms to convert to %s", duration, r);
+                    //Timber.d("Took %d ms to convert to %s", duration, r);
                 } catch (Exception e) {
-                    Timber.e(e, "Failed to convert %s", d);
+                    //Timber.e(e, "Failed to convert %s", d);
                 }
             }
         }
@@ -155,7 +155,7 @@ public final class OpenCCDictManager {
             return openCCLineConv(input, sharedFile.getPath());
         }
 
-        Timber.w("Specified config %s doesn't exist, returning raw input ...", configFileName);
+        //Timber.w("Specified config %s doesn't exist, returning raw input ...", configFileName);
         return input;
     }
 

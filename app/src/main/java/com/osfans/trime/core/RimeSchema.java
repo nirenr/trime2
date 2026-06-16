@@ -83,7 +83,12 @@ public final class RimeSchema {
                 return getStates().get(Rime.getRimeOption(getName()) ? 1 : 0);
             }
         }
-
+        public String getOption() {
+            if (!options.isEmpty()) {
+                return options.get(reset);
+            }
+            return null;
+        }
         public String getUnState() {
             if (!options.isEmpty()) {
                 return getStates().get((reset + 1) % options.size());
