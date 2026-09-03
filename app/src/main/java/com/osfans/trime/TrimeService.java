@@ -690,7 +690,11 @@ public class TrimeService extends InputMethodService {
         if (TextUtils.isEmpty(text)) return;
         lastCommittedText = text;
         InputConnection ic = getCurrentInputConnection();
-        if (ic != null) ic.commitText(text, 1);
+        if (ic != null) {
+          if (ic.commitText(text, 1) == true) {
+            ThemeManager.callFunction("commitText", text);
+          }
+        }
     }
 
     public void commitTextAndClearComposition(CharSequence text) {
@@ -1671,7 +1675,7 @@ public class TrimeService extends InputMethodService {
             @Override
             public void run() {
                 try {
-                    sendMsgAux(text);
+                    Toast.makeText(this, text, Toast.LENGTH_SHORT).show();
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
