@@ -62,6 +62,8 @@ public class LuaEditor extends FreeScrollingTextField {
     private Document _inputtingDoc;
 
     private boolean _isWordWrap;
+    private int luaTabSpaces;
+    private final java.util.EnumMap<ColorScheme.Colorable,Integer> luaColors = new java.util.EnumMap<>(ColorScheme.Colorable.class);
 
     private Context mContext;
 
@@ -133,6 +135,48 @@ public class LuaEditor extends FreeScrollingTextField {
         setTextColor(textColor);
         setTextHighlightColor(textColorHighlight);
         //setBackground(new ColorDrawable(backgroundColor));
+        if (isYamlMode()) { rememberLuaColors(); applyYamlColors(); }
+    }
+
+    /** Enable YAML syntax highlighting without changing other LuaEditor instances. */
+    @Override public void setYamlMode(boolean enable) {
+        if (enable == isYamlMode()) return;
+        if (enable) {
+            luaTabSpaces = _tabLength;
+            rememberLuaColors();
+        }
+        super.setYamlMode(enable);
+        if (enable) {
+            setTabSpaces(2);
+            applyYamlColors();
+        } else {
+            setTabSpaces(luaTabSpaces);
+            for (java.util.Map.Entry<ColorScheme.Colorable,Integer> color : luaColors.entrySet())
+                getColorScheme().setColor(color.getKey(), color.getValue());
+            luaColors.clear();
+            invalidate();
+        }
+    }
+
+    private void rememberLuaColors() {
+        for (ColorScheme.Colorable color : new ColorScheme.Colorable[]{
+                ColorScheme.Colorable.NAME, ColorScheme.Colorable.STRING,
+                ColorScheme.Colorable.LITERAL, ColorScheme.Colorable.COMMENT,
+                ColorScheme.Colorable.GLOBAL, ColorScheme.Colorable.SECONDARY,
+                ColorScheme.Colorable.NON_PRINTING_GLYPH})
+            luaColors.put(color, getColorScheme().getColor(color));
+    }
+
+    private void applyYamlColors() {
+        boolean dark = getColorScheme().isDark();
+        setBasewordColor(dark ? 0xff9cdcfe : 0xff174a96);
+        setStringColor(dark ? 0xffce9178 : 0xffa13a24);
+        setUserwordColor(dark ? 0xffb5cea8 : 0xff17683d);
+        setCommentColor(dark ? 0xff86a67a : 0xff637b53);
+        setGlobalColor(dark ? 0xffc586c0 : 0xff8051a0);
+        getColorScheme().setColor(ColorScheme.Colorable.SECONDARY, dark ? 0xffd4d4d4 : 0xff526176);
+        setLineColor(dark ? 0xff7d8997 : 0xff98a3b0);
+        invalidate();
     }
 
     public void addNames(String[] names) {
@@ -530,7 +574,8 @@ public class LuaEditor extends FreeScrollingTextField {
     }
 
     public void open(String filename) throws IOException {
-        _lastSelectedFile = filename;
+        String lower = filename.toLowerCase(java.util.Locale.ROOT);
+        boolean yaml = lower.endsWith(".yaml") || lower.endsWith(".yml");
         if (!new File(filename).exists()) {
             try {
                 new File(filename).createNewFile();
@@ -538,17 +583,28 @@ public class LuaEditor extends FreeScrollingTextField {
                 if (BuildConfig.DEBUG)
                     e.printStackTrace();
             }
+            _lastSelectedFile = filename;
+            setYamlMode(yaml);
             setText("");
             return;
         }
 
-        BufferedReader reader = new BufferedReader(new FileReader(filename));
         StringBuilder buf = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null)
-            buf.append(line).append("\n");
-        if (buf.length() > 1)
-            buf.setLength(buf.length() - 1);
+        if (yaml) {
+            // Preserve line endings, trailing newline and indentation verbatim.
+            try (java.io.Reader reader = new java.io.InputStreamReader(new java.io.FileInputStream(filename), java.nio.charset.StandardCharsets.UTF_8)) {
+                char[] chunk = new char[8192]; int count;
+                while ((count = reader.read(chunk)) != -1) buf.append(chunk, 0, count);
+            }
+        } else {
+            try (BufferedReader reader = new BufferedReader(new FileReader(filename))) {
+                String line;
+                while ((line = reader.readLine()) != null) buf.append(line).append("\n");
+            }
+            if (buf.length() > 1) buf.setLength(buf.length() - 1);
+        }
+        _lastSelectedFile = filename;
+        setYamlMode(yaml);
         setText(buf);
         /*
         File inputFile = new File(filename);

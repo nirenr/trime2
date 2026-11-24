@@ -1347,7 +1347,7 @@ public class LuaActivity extends Activity implements ResourceFinder, LuaContext,
         if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ShortcutManager scm = (ShortcutManager) getSystemService(SHORTCUT_SERVICE);
             ShortcutInfo si = new ShortcutInfo.Builder(this, text)
-                    .setIcon(Icon.createWithResource(this, R.drawable.ic_app_icon_foreground))
+                    .setIcon(Icon.createWithResource(this, R.mipmap.ic_launcher))
                     .setShortLabel(label)
                     .setIntent(intent)
                     .build();
@@ -1361,7 +1361,7 @@ public class LuaActivity extends Activity implements ResourceFinder, LuaContext,
         } else {
             Intent addShortcut = new Intent("com.android.launcher.action.INSTALL_SHORTCUT");
             Intent.ShortcutIconResource icon = Intent.ShortcutIconResource.fromContext(this,
-                    R.drawable.ic_app_icon_foreground);
+                    R.mipmap.ic_launcher);
             addShortcut.putExtra(Intent.EXTRA_SHORTCUT_NAME, label);
             addShortcut.putExtra(Intent.EXTRA_SHORTCUT_INTENT, intent);
             addShortcut.putExtra("duplicate", 0);

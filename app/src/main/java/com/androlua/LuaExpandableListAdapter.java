@@ -11,6 +11,7 @@ import android.view.animation.*;
 import android.widget.*;
 
 import com.osfans.trime.BuildConfig;
+import com.osfans.trime.R;
 
 import org.luaj.*;
 import org.luaj.lib.jse.CoerceJavaToLua;
@@ -22,7 +23,7 @@ import java.util.*;
 
 public class LuaExpandableListAdapter extends BaseExpandableListAdapter {
 
-	private BitmapDrawable mDraw;
+	private Drawable mDraw;
 	private Resources mRes;
 	private Globals L;
 	private LuaContext mContext;
@@ -63,7 +64,7 @@ public class LuaExpandableListAdapter extends BaseExpandableListAdapter {
 		L = context.getLuaState();
 		mRes=mContext.getContext().getResources();
 
-		mDraw=new BitmapDrawable(mRes, getClass().getResourceAsStream("/res/drawable/icon.png"));
+		mDraw=context.getContext().getResources().getDrawable(R.mipmap.ic_launcher);
 		mDraw.setColorFilter(0x88ffffff, PorterDuff.Mode.SRC_ATOP);
 
 		mGroupLayout = groupLayout;

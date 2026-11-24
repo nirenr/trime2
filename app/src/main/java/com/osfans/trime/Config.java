@@ -274,7 +274,7 @@ public class Config {
         return new File(getKeyboardDir()).list(new FilenameFilter() {
             @Override
             public boolean accept(File dir, String name) {
-                return name.endsWith(".lua");
+                return name.endsWith(".lua") && !com.osfans.trime.editor.LuaPatchManager.isPatch(name);
             }
         });
     }

@@ -917,7 +917,7 @@ public class LuaWebView extends WebView implements LuaGcable {
 
         @Override
         public Bitmap getDefaultVideoPoster() {
-            return BitmapFactory.decodeResource(mContext.getResources(), R.drawable.ic_app_icon_foreground);
+            return BitmapFactory.decodeResource(mContext.getResources(), R.mipmap.ic_launcher);
         }
 
         // For Android 3.0+

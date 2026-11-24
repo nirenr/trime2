@@ -18,6 +18,7 @@ import android.widget.Toast;
 
 import com.androlua.LuaUtil;
 import com.osfans.trime.core.Rime;
+import com.osfans.trime.editor.LuaPatchManager;
 import com.osfans.trime.keyboard.AbsKeyboardView;
 import com.osfans.trime.keyboard.FlexboxKeyboardView;
 import com.osfans.trime.keyboard.KeyboardView;
@@ -141,10 +142,15 @@ public class InputView extends FrameLayout implements ResourceFinder {
             // 初始化 Lua 环境
             Globals globals = JsePlatform.standardGlobals();
             globals.finder = this;
-            LuaValue func = globals.loadfilex(id + ".lua");
+            String path = id + ".lua";
+            File base = new File(path);
+            if (!base.isFile()) base = new File(findFile(path));
+            LuaValue func = globals.loadfilex(base.isFile() ? base.getAbsolutePath() : path);
             try {
                 if (func.isfunction()) {
                     LuaValue ret = func.call();
+                    try { LuaPatchManager.applyFile(globals, globals, base); }
+                    catch (Exception e) { ThemeManager.sendMsg("键盘补丁: " + e); }
                     if (ret.isuserdata(View.class)) {
                         setKeyboardView(ret.touserdata(View.class));
                         return;

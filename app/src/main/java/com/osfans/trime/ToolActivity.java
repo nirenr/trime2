@@ -246,7 +246,7 @@ public class ToolActivity extends ListActivity implements AdapterView.OnItemLong
         if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             ShortcutManager scm = (ShortcutManager) getSystemService(SHORTCUT_SERVICE);
             ShortcutInfo si = new ShortcutInfo.Builder(this, text)
-                    .setIcon(Icon.createWithResource(this, R.drawable.icon))
+                    .setIcon(Icon.createWithResource(this, R.mipmap.ic_launcher))
                     .setShortLabel(text)
                     .setIntent(intent)
                     .build();
@@ -259,7 +259,7 @@ public class ToolActivity extends ListActivity implements AdapterView.OnItemLong
         } else {
             Intent addShortcut = new Intent("com.android.launcher.action.INSTALL_SHORTCUT");
             Intent.ShortcutIconResource icon = Intent.ShortcutIconResource.fromContext(this,
-                    R.drawable.icon);
+                    R.mipmap.ic_launcher);
             addShortcut.putExtra(Intent.EXTRA_SHORTCUT_NAME, text);
             addShortcut.putExtra(Intent.EXTRA_SHORTCUT_INTENT, intent);
             addShortcut.putExtra("duplicate", 0);

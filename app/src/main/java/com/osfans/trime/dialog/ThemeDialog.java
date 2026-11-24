@@ -140,6 +140,7 @@ public class ThemeDialog {
             LuaValue chunk = globals.loadfilex(scriptPath, env);
             if (chunk.isfunction()) {
                 chunk.call();
+                com.osfans.trime.editor.LuaPatchManager.applyFile(globals,env,new java.io.File(scriptPath));
                 LuaValue luaName = env.get("name");
                 if (luaName.isstring()) {
                     // 返回 Lua 定义的名称

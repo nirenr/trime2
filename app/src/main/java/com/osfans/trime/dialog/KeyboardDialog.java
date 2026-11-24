@@ -172,6 +172,7 @@ public class KeyboardDialog implements ResourceFinder {
             LuaValue chunk = globals.loadfilex(path, env);
             if (chunk.isfunction()) {
                 chunk.call();
+                com.osfans.trime.editor.LuaPatchManager.applyFile(globals,env,new java.io.File(path));
                 LuaValue nameValue = env.get("name");
                 if(!env.get("lock").toboolean())
                     return null;

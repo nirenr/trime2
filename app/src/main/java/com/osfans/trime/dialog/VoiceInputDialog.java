@@ -57,6 +57,7 @@ public class VoiceInputDialog {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
                         Function.saveString(LuaApplication.getInstance(), "recognition_service", mEngines[which]);
+                        dialog.dismiss();
                     }
                 })
                 .setNegativeButton(android.R.string.cancel,null)

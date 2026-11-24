@@ -245,6 +245,48 @@ public class FreeScrollingTextField extends View
     protected ColorScheme _colorScheme = new ColorSchemeLight();
     protected boolean _isHighlightRow = false;
     protected boolean _showNonPrinting = false;
+    private boolean yamlMode;
+    private YamlCompletionPanel yamlCompletion;
+    private void refreshYamlCompletion() {
+        if (yamlCompletion == null) yamlCompletion = new YamlCompletionPanel(this, () -> _hDoc.toString());
+        yamlCompletion.refresh();
+    }
+    private void dismissYamlCompletion() { if (yamlCompletion != null) yamlCompletion.cancel(); }
+    private boolean luaAutoComplete, luaShowNonPrinting;
+
+    public boolean isYamlMode() { return yamlMode; }
+
+    /** Per-view mode: never change the static Lua language used by other editors. */
+    public void setYamlMode(boolean enable) {
+        if (yamlMode == enable) return;
+        _fieldController.cancelSpanning();
+        if (enable) {
+            luaAutoComplete = _isAutoComplete;
+            luaShowNonPrinting = _showNonPrinting;
+        }
+        if (!enable && yamlCompletion != null) yamlCompletion.close();
+        yamlMode = enable;
+        setAutoComplete(enable ? false : luaAutoComplete);
+        if (enable) _autoCompletePanel.dismiss();
+        setNonPrintingCharVisibility(enable || luaShowNonPrinting);
+        _hDoc.clearSpans();
+        _hDoc.setLines(new ArrayList<Rect>());
+        respan();
+        invalidate();
+    }
+
+    public boolean isNonPrintingCharVisible() { return _showNonPrinting; }
+
+    @Override protected void onDetachedFromWindow() {
+        if (yamlMode) _fieldController.cancelSpanning();
+        if (yamlCompletion != null) yamlCompletion.close();
+        super.onDetachedFromWindow();
+    }
+
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (yamlMode) respan();
+    }
     protected boolean _isAutoIndent = true;
     protected int _autoIndentWidth = 4;
     protected boolean _isLongPressCaps = false;
@@ -441,6 +483,7 @@ public class FreeScrollingTextField extends View
     }
 
     public void format() {
+        if (yamlMode) return; // Lua formatting can destroy YAML indentation.
         selectText(false);
         //if(_hDoc.getRowCount()<9999)
         LuaParser.lexer(new DocumentProvider(_hDoc), globals, new Flag());
@@ -510,6 +553,7 @@ public class FreeScrollingTextField extends View
                     sendAccessibilityEventUnchecked(event);
                 }
                 _autoCompletePanel.dismiss();
+                dismissYamlCompletion();
             }
 
 
@@ -524,6 +568,7 @@ public class FreeScrollingTextField extends View
                     sendAccessibilityEventUnchecked(event);
                 }
                 _autoCompletePanel.dismiss();
+                if (yamlMode) refreshYamlCompletion();
             }
 
             @Override
@@ -534,6 +579,7 @@ public class FreeScrollingTextField extends View
                     event.setAddedCount(addCount);
                     sendAccessibilityEventUnchecked(event);
                 }
+                if (yamlMode) { refreshYamlCompletion(); return; }
                 if (!_isAutoComplete)
                     return;
                 int curr = _caretPosition;
@@ -688,6 +734,7 @@ public class FreeScrollingTextField extends View
      * state is reset and the view is invalidated as a side-effect.
      */
     public void setDocumentProvider(DocumentProvider hDoc) {
+        dismissYamlCompletion();
         _hDoc = hDoc;
         resetView();
         _fieldController.cancelSpanning(); //stop existing lex threads
@@ -734,6 +781,7 @@ public class FreeScrollingTextField extends View
     //-------------------------- Paint methods ----------------------------
 
     public void setEdited(boolean set) {
+        if (set && yamlMode) _fieldController.cancelYaml();
         _isEdited = set;
     }
 
@@ -741,6 +789,7 @@ public class FreeScrollingTextField extends View
     public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
+        if (yamlMode) outAttrs.inputType |= InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_ENTER_ACTION
                 | EditorInfo.IME_ACTION_DONE
                 | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
@@ -878,7 +927,7 @@ public class FreeScrollingTextField extends View
         realDraw(canvas);
 
         canvas.restore();
-        if (LexState.errormsg != null) {
+        if (!yamlMode && LexState.errormsg != null) {
             int paintX = drawString(canvas, LexState.errormsg, 0, LexState.errormsg.length(), getPaddingLeft(), getScrollY() + getHeight() - getPaddingBottom() - rowHeight());
             if (paintX > _xExtent) {
                 // record widest line seen so far
@@ -1228,7 +1277,8 @@ public class FreeScrollingTextField extends View
             case ' ':
                 if (_showNonPrinting) {
                     _brush.setColor(_colorScheme.getColor(Colorable.NON_PRINTING_GLYPH));
-                    canvas.drawText(Language.GLYPH_SPACE, 0, 1, paintX, paintY, _brush);
+                    float glyphX = yamlMode ? paintX + (charWidth - _brush.measureText(Language.GLYPH_SPACE))/2f : paintX;
+                    canvas.drawText(Language.GLYPH_SPACE, 0, 1, glyphX, paintY, _brush);
                     _brush.setColor(originalColor);
                 } else {
                     canvas.drawText(" ", 0, 1, paintX, paintY, _brush);
@@ -1237,7 +1287,7 @@ public class FreeScrollingTextField extends View
 
             case Language.EOF: //fall-through
             case Language.NEWLINE:
-                if (_showNonPrinting) {
+                if (_showNonPrinting && (!yamlMode || c != Language.EOF)) {
                     _brush.setColor(_colorScheme.getColor(Colorable.NON_PRINTING_GLYPH));
                     canvas.drawText(Language.GLYPH_NEWLINE, 0, 1, paintX, paintY, _brush);
                     _brush.setColor(originalColor);
@@ -1420,6 +1470,7 @@ public class FreeScrollingTextField extends View
     }
 
     protected int getSpaceAdvance() {
+        if (yamlMode) return Math.max(1, (int) _brush.measureText(" "));
         if (_showNonPrinting) {
             return (int) _brush.measureText(Language.GLYPH_SPACE,
                     0, Language.GLYPH_SPACE.length());
@@ -1442,6 +1493,7 @@ public class FreeScrollingTextField extends View
     }
 
     protected int getTabAdvance() {
+        if (yamlMode) return Math.max(1,_tabLength)*getSpaceAdvance();
         if (_showNonPrinting) {
             return _tabLength * (int) _brush.measureText(Language.GLYPH_SPACE,
                     0, Language.GLYPH_SPACE.length());
@@ -1451,6 +1503,11 @@ public class FreeScrollingTextField extends View
     }
 
     protected int getTabAdvance(int x) {
+        if (yamlMode) {
+            int tab = Math.max(1,_tabLength), width = getSpaceAdvance();
+            int column = Math.max(0, x - _leftOffset)/width;
+            return (tab-column%tab)*width;
+        }
         if (_showNonPrinting) {
             return _tabLength * (int) _brush.measureText(Language.GLYPH_SPACE,
                     0, Language.GLYPH_SPACE.length());
@@ -2578,6 +2635,7 @@ public class FreeScrollingTextField extends View
     @Override
     protected void onFocusChanged(boolean gainFocus, int direction, Rect previouslyFocusedRect) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect);
+        if (!gainFocus) dismissYamlCompletion();
         invalidateCaretRow();
     }
 
@@ -2714,6 +2772,13 @@ public class FreeScrollingTextField extends View
     private class TextFieldController
             implements Lexer.LexCallback {
         private final Lexer _lexer = new Lexer(this);
+        private Thread yamlWorker;
+        private int yamlGeneration;
+
+        private void cancelYaml() {
+            ++yamlGeneration;
+            if (yamlWorker != null) { yamlWorker.interrupt(); yamlWorker = null; }
+        }
         private boolean _isInSelectionMode = false;
         private boolean _isInSelectionMode2;
 
@@ -2725,11 +2790,32 @@ public class FreeScrollingTextField extends View
          * Does nothing if the Lexer language is not a programming language
          */
         public void determineSpans() {
+            if (yamlMode) {
+                cancelYaml();
+                final int generation = yamlGeneration;
+                final DocumentProvider document = _hDoc;
+                final String snapshot = document.toString();
+                yamlWorker = new Thread(() -> {
+                    final List<Pair> spans = com.myopicmobile.textwarrior.common.YamlLexer.scan(snapshot);
+                    if (spans == null || Thread.currentThread().isInterrupted()) return;
+                    post(() -> {
+                        if (!yamlMode || generation != yamlGeneration || document != _hDoc) return;
+                        yamlWorker = null;
+                        document.setSpans(spans);
+                        document.setLines(new ArrayList<Rect>());
+                        invalidate();
+                    });
+                }, "TextWarrior-YAML");
+                yamlWorker.start();
+                return;
+            }
             LexState.erroridx = -1;
             _lexer.tokenize(_hDoc, globals);
         }
 
         public void cancelSpanning() {
+            cancelYaml();
+            removeCallbacks(determineSpansRunnable);
             _lexer.cancelTokenize();
         }
 
@@ -2739,6 +2825,7 @@ public class FreeScrollingTextField extends View
             post(new Runnable() {
                 @Override
                 public void run() {
+                    if (yamlMode) return;
                     _hDoc.setSpans(results);
                     if (LexState.lines.isEmpty() || !TextUtils.isEmpty(LexState.errormsg))
                         _hDoc.setLines(new ArrayList<>(Lexer.getLines()));
@@ -2863,7 +2950,7 @@ public class FreeScrollingTextField extends View
                 ++whitespaceCount;
             }
 
-            whitespaceCount += _autoIndentWidth * AutoIndent.createAutoIndent(_hDoc.subSequence(startOfLine, _caretPosition - startOfLine));
+            if (!yamlMode) whitespaceCount += _autoIndentWidth * AutoIndent.createAutoIndent(_hDoc.subSequence(startOfLine, _caretPosition - startOfLine));
             if (whitespaceCount < 0)
                 return new char[]{Language.NEWLINE};
 
@@ -2878,6 +2965,7 @@ public class FreeScrollingTextField extends View
         }
 
         public void moveCaretDown() {
+            dismissYamlCompletion();
             if (!caretOnLastRowOfFile()) {
                 int currCaret = _caretPosition;
                 int currRow = _caretRow;
@@ -2907,6 +2995,7 @@ public class FreeScrollingTextField extends View
         }
 
         public void moveCaretUp() {
+            dismissYamlCompletion();
             if (!caretOnFirstRowOfFile()) {
                 int currCaret = _caretPosition;
                 int currRow = _caretRow;
@@ -2938,6 +3027,7 @@ public class FreeScrollingTextField extends View
          *                 a result of entering text
          */
         public void moveCaretRight(boolean isTyping) {
+            if (!isTyping) dismissYamlCompletion();
             if (!caretOnEOF()) {
                 int originalRow = _caretRow;
                 ++_caretPosition;
@@ -2958,6 +3048,7 @@ public class FreeScrollingTextField extends View
          *                 a result of deleting text
          */
         public void moveCaretLeft(boolean isTyping) {
+            if (!isTyping) dismissYamlCompletion();
             if (_caretPosition > 0) {
                 int originalRow = _caretRow;
                 --_caretPosition;
@@ -2974,6 +3065,7 @@ public class FreeScrollingTextField extends View
         }
 
         public void moveCaret(int i) {
+            dismissYamlCompletion();
             if (i < 0 || i >= _hDoc.docLength()) {
                 TextWarriorException.fail("Invalid caret position");
                 return;
@@ -3032,6 +3124,7 @@ public class FreeScrollingTextField extends View
          * @param mode If true, enter select mode; else exit select mode
          */
         public void setSelectText(boolean mode) {
+            if (mode) dismissYamlCompletion();
             if (!(mode ^ _isInSelectionMode)) {
                 return;
             }

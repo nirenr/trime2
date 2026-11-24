@@ -31,6 +31,7 @@ import com.osfans.trime.TrimeService;
 import com.osfans.trime.core.Rime;
 import com.osfans.trime.core.RimeSchema;
 import com.osfans.trime.enums.InlineModeType;
+import com.osfans.trime.editor.LuaPatchManager;
 import com.osfans.trime.util.Function;
 
 import org.luaj.Globals;
@@ -143,9 +144,13 @@ public class ThemeManager {
         mGlobals = JsePlatform.standardGlobals();
         mGlobals.finder = mResourceFinder;
         try {
-            LuaValue func = mGlobals.loadfilex("main.lua");
+            File base = new File(Config.getThemeDir(name), "main.lua");
+            if (!base.isFile()) base = new File("main.lua");
+            LuaValue func = mGlobals.loadfilex(base.isFile() ? base.getAbsolutePath() : "main.lua");
             if (func.isfunction()) {
                 func.call();
+                try { LuaPatchManager.applyFile(mGlobals, mGlobals, base); }
+                catch (Exception e) { sendMsg("主题补丁: " + e); }
             } else {
                 sendMsg("setTheme " + func.tojstring());
                 func = mGlobals.loadfilex("themes/default/main.lua");
@@ -183,9 +188,13 @@ public class ThemeManager {
         mColor.setmetatable(mt);
         String path = "styles/" + name + "/main.lua";
         try {
-            LuaValue func = mGlobals.loadfilex(path, mColor);
+            File base = new File(Config.getStyleDir(name), "main.lua");
+            if (!base.isFile()) base = new File(path);
+            LuaValue func = mGlobals.loadfilex(base.isFile() ? base.getAbsolutePath() : path, mColor);
             if (func.isfunction()) {
                 func.call();
+                try { LuaPatchManager.applyFile(mGlobals, mColor, base); }
+                catch (Exception e) { sendMsg("配色补丁: " + e); }
                 return;
             } else {
                 sendMsg("setStyle " + func.tojstring());

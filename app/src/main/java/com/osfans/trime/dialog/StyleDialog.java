@@ -136,6 +136,7 @@ public class StyleDialog {
             LuaValue chunk = globals.loadfilex(path, env);
             if (chunk.isfunction()) {
                 chunk.call();
+                com.osfans.trime.editor.LuaPatchManager.applyFile(globals,env,new java.io.File(path));
                 LuaValue nameValue = env.get("name");
                 if (nameValue.isstring()) {
                     return nameValue.tojstring()+ " (" + styleId + ")"; // 仅返回名称，ID 在 UI 组装处处理

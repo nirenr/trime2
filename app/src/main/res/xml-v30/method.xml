@@ -14,7 +14,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
     <!-- Add default system subtype so we can properly set the icon and label -->
     <subtype android:label="@string/trime_app_slogan"
         android:name="@string/trime_app_name"
-        android:icon="@mipmap/ic_app_icon"
+        android:icon="@mipmap/ic_launcher"
         android:imeSubtypeMode="keyboard"
         android:imeSubtypeExtraValue="AsciiCapable" />
 

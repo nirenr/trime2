@@ -555,7 +555,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
                 Notification notification = new NotificationCompat.Builder(context, "rime_deploy_channel")
                         .setContentTitle("正在部署")
                         .setContentText("请稍候...")
-                        .setSmallIcon(R.drawable.icon) // 替换为你的图标
+                        .setSmallIcon(R.mipmap.ic_launcher) // 替换为你的图标
                         .setOngoing(true) // 设置为正在进行，防止被划掉
                         .setUsesChronometer(true) // 核心：开启计时器
                         .setWhen(System.currentTimeMillis())
@@ -570,7 +570,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
                 Notification notification = new NotificationCompat.Builder(context, "rime_deploy_channel")
                         .setContentTitle("部署成功")
                         .setContentText("部署已完成，总耗时：" + duration + "秒")
-                        .setSmallIcon(R.drawable.icon) // 替换为你的图标
+                        .setSmallIcon(R.mipmap.ic_launcher) // 替换为你的图标
                         .setOngoing(false) // 允许划掉
                         .setUsesChronometer(false) // 停止计时
                         .setTimeoutAfter(duration<5?1000:30000)
@@ -583,7 +583,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
                 Notification notification = new NotificationCompat.Builder(context, "rime_deploy_channel")
                         .setContentTitle("部署失败")
                         .setContentText("部署过程中出现错误，已停止。耗时：" + duration + "秒")
-                        .setSmallIcon(R.drawable.icon) // 替换为你的图标
+                        .setSmallIcon(R.mipmap.ic_launcher) // 替换为你的图标
                         .setOngoing(false)
                         .build();
                 notificationManager.notify(notificationId, notification);

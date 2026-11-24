@@ -69,7 +69,8 @@ public class PrefLauncher extends Activity implements AdapterView.OnItemClickLis
                 "键盘主题",
                 "颜色样式",
                 "默认键盘",
-                "语音识别引擎"
+                "语音识别引擎",
+                "主题编辑器", "配色编辑器", "键盘编辑器", "方案编辑器"
         });
         ListView mListView = new ListView(this);
         // 解决内容被导航栏遮挡的关键：应用 WindowInsets
@@ -174,6 +175,10 @@ public class PrefLauncher extends Activity implements AdapterView.OnItemClickLis
                 break;
             case 7:
                 new VoiceInputDialog(this).show();
+                break;
+            case 8: case 9: case 10: case 11:
+                startActivity(new Intent(this, com.osfans.trime.editor.EditorActivity.class)
+                        .putExtra(com.osfans.trime.editor.EditorActivity.MODE, position - 8));
                 break;
         }
     }

@@ -91,7 +91,7 @@ public class Welcome extends LuaActivity {
         localDir = app.getLuaDir();
         /*try {
             if (new File(app.getLuaPath("setup.png")).exists())
-                getWindow().setBackgroundDrawable(new LuaBitmapDrawable(app, app.getLuaPath("setup.png"), getResources().getDrawable(R.drawable.icon)));
+                getWindow().setBackgroundDrawable(new LuaBitmapDrawable(app, app.getLuaPath("setup.png"), getResources().getDrawable(R.mipmap.ic_launcher)));
         } catch (Exception e) {
             e.printStackTrace();
         }*/

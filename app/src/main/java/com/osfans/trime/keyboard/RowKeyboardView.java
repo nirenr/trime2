@@ -50,9 +50,10 @@ public class RowKeyboardView extends KeyboardView implements View.OnClickListene
         mLayout = globals.get("layout").opttable(null);
         mRows = globals.get("rows").checktable();
         int len = mRows.length();
-        mRowHeight = 100.0 / len;
+        mRowHeight = 100.0 / Math.max(1, len);
         mRowHeight = globals.get("key_height").optdouble(mRowHeight);
-        mKeyWidth = globals.get("key_width").optdouble(100.0/mRows.get(1).get("keys").checktable().length());
+        int firstKeyCount = len > 0 && mRows.get(1).istable() && mRows.get(1).get("keys").istable() ? mRows.get(1).get("keys").length() : 0;
+        mKeyWidth = globals.get("key_width").optdouble(100.0 / Math.max(1, firstKeyCount));
         mTop=0;
         for (int i = 0; i < len; i++) {
             loadRow(mRows.get(i + 1).checktable());
@@ -65,6 +66,15 @@ public class RowKeyboardView extends KeyboardView implements View.OnClickListene
         LuaTable keys = row.get("keys").checktable();
         int len = keys.length();
         mLeft=0;
+        // Row style is a container background, independent of individual Key styles.
+        if (row.get("style").type() == org.luaj.LuaValue.TSTRING) {
+            View background = new View(getContext());
+            background.setBackground(ThemeManager.getStyle().getStyle(row.get("style").tojstring()).getBackground(0));
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams((int)mWidth, Math.max(0,(int)(mHeight*height/100)), Gravity.TOP|Gravity.LEFT);
+            params.topMargin = (int)mTop;
+            background.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            addView(background, 0, params);
+        }
         for (int i = 0; i < len; i++) {
             loadKey(keys.get(i+1).checktable(),width,height);
         }
