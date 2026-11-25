@@ -98,8 +98,8 @@ SPDX-License-Identifier: GPL-3.0-or-later
     <string name="custom_sound_effect_name">自定义按键音效</string>
     <string name="setup__next">下一步</string>
     <string name="setup__done">完成</string>
-    <string name="setup__enable_ime_hint">在语言和输入设置中启用<b>同文输入法</b></string>
-    <string name="setup__select_ime_hint">选择<b>同文输入法</b>作为默认输入法</string>
+    <string name="setup__enable_ime_hint">在语言和输入设置中启用<b>中文兔输入法</b></string>
+    <string name="setup__select_ime_hint">选择<b>中文兔输入法</b>作为默认输入法</string>
     <string name="setup__enable_ime">启用输入法</string>
     <string name="setup__select_ime">选择输入法</string>
     <string name="setup__prev">上一步</string>

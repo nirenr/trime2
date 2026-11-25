@@ -13,6 +13,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.view.View;
 import android.widget.*;
 import com.osfans.trime.Config;
+import com.osfans.trime.TrimeService;
+import com.osfans.trime.dialog.DeployDialog;
 import com.osfans.trime.core.DataManager;
 import org.luaj.Globals;
 import org.luaj.LuaValue;
@@ -51,13 +53,21 @@ public class EditorActivity extends Activity {
     private String paletteGroup="key";
     private PaletteProperties paletteSchema;
     private PaletteGroupSnapshot paletteGroups;
-    private LinearLayout paletteDetail, paletteList;
+    private LinearLayout paletteOverview, paletteDetail, paletteList, paletteButtonLists;
+    private String paletteButtonGroup;
+    // Worker-confined preset snapshot, reused across scalar and list edits.
+    private List<PresetKeyConfig> palettePresetCache;
+    private String palettePresetTheme;
     private String paletteDetailGroup;
     private long paletteListVersion;
-    private Runnable paletteListFrame;
+    private Runnable paletteListFrame, paletteOverviewFrame;
+    private long paletteOverviewVersion;
     private int paletteRestoreY=-1;
     private android.view.ViewTreeObserver.OnGlobalLayoutListener paletteRestoreLayout;
-    private List<LuaValue> builtinPalettes;
+    private PaletteProperties.Catalog paletteCatalog;
+    // Each cache is used by only its own single-thread executor.
+    private final PaletteEditSession paletteEdits=new PaletteEditSession(this::newEditorGlobals);
+    private final PaletteEditSession palettePreviewEdits=new PaletteEditSession(this::newEditorGlobals);
     private boolean showOptional=false;
     private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor();
     private final java.util.concurrent.ThreadPoolExecutor previews = new java.util.concurrent.ThreadPoolExecutor(1,1,0L,java.util.concurrent.TimeUnit.MILLISECONDS,new java.util.concurrent.LinkedBlockingQueue<Runnable>());
@@ -71,27 +81,41 @@ public class EditorActivity extends Activity {
     private final java.util.concurrent.ExecutorService resources = java.util.concurrent.Executors.newSingleThreadExecutor();
     private final android.util.LruCache<String,android.graphics.Typeface> fonts = new android.util.LruCache<>(32);
     private android.app.ProgressDialog progress;
+    private Runnable delayedProgress;
     private interface Work<T>{T run() throws Exception;}
     private interface Result<T>{void accept(T value);}
-    private <T> void background(String message,Work<T> work,Result<T> result){
+    private <T> void background(String message,Work<T> work,Result<T> result){background(message,0,work,result);}
+    private <T> void background(String message,long delay,Work<T> work,Result<T> result){
         if(busy||destroyed)return;
         busy=true; cancelPreview();
-        progress=new android.app.ProgressDialog(this);progress.setMessage(message);progress.setCancelable(false);progress.show();
+        Runnable show=()->{if(!busy||destroyed)return;progress=new android.app.ProgressDialog(this);progress.setMessage(message);progress.setCancelable(false);progress.show();};
+        if(delay>0){delayedProgress=show;main.postDelayed(show,delay);}else show.run();
         io.execute(()->{try{T data=work.run();main.post(()->{if(destroyed)return;endWork();try{result.accept(data);}catch(Exception e){error(e);}});}catch(Exception e){main.post(()->{if(destroyed)return;endWork();error(e);});}});
     }
-    private void endWork(){busy=false;if(progress!=null){progress.dismiss();progress=null;}}
+    private void endWork(){if(delayedProgress!=null){main.removeCallbacks(delayedProgress);delayedProgress=null;}busy=false;if(progress!=null){progress.dismiss();progress=null;}}
     private void cancelPreview(){previewVersion++;if(pendingPreview!=null)main.removeCallbacks(pendingPreview);previewScheduled=false;latestPreview=null;if(previewTask!=null){previewTask.cancel(false);previews.purge();}}
-    @Override protected void onDestroy(){if(codeEditor!=null)codeEditor.cancelSpanning();destroyed=true;cancelPaletteList();cancelPreview();main.removeCallbacksAndMessages(null);io.shutdown();previews.shutdownNow();resources.shutdownNow();if(progress!=null)progress.dismiss();super.onDestroy();}
+    @Override protected void onDestroy(){if(codeEditor!=null)codeEditor.cancelSpanning();destroyed=true;cancelPaletteOverview();cancelPaletteList();cancelPreview();main.removeCallbacksAndMessages(null);io.shutdown();previews.shutdownNow();resources.shutdownNow();if(progress!=null)progress.dismiss();super.onDestroy();}
     private static class Parsed { Globals model,palette; PaletteProperties schema; PaletteGroupSnapshot groups; Exception failure; File styleDir; ThemeServiceConfig[] services; List<PresetKeyConfig> presetKeys; String presetError; String paletteNotice; SchemaDocument scheme; }
     private Parsed parse(String input,boolean show){return parse(input,show,baseSource);}
-    private Parsed parse(String input,boolean show,String base){Parsed r=new Parsed();if(!show)return r;try{if(mode==3){r.scheme=new SchemaDocument(input);return r;}r.model=evaluatePatched(base,input);if(mode==0){r.services=new ThemeServiceConfig[]{ThemeServiceConfig.read(r.model,"ai_config"),ThemeServiceConfig.read(r.model,"asr_config")};try{r.presetKeys=PresetKeyConfig.read(r.model,evaluate(readDefaultTheme()));}catch(Exception e){r.presetError=e.getMessage();}}if(mode==1){r.palette=r.model;r.schema=new PaletteProperties(r.model,builtinPalettes());r.groups=new PaletteGroupSnapshot(r.model,r.schema);}if(mode==2){Globals theme=null;try{theme=evaluateFile(new File(Config.getThemeDir(Config.getTheme()),"main.lua"));r.presetKeys=PresetKeyConfig.read(theme,evaluate(readDefaultTheme()));}catch(Exception e){r.presetError=e.toString();if(theme==null)try{theme=evaluate(readDefaultTheme());r.presetKeys=PresetKeyConfig.read(theme,theme);}catch(Exception ignored){}}loadKeyboardPalette(r,theme);}}catch(Exception e){r.failure=e;}return r;}
+    private Parsed parse(String input,boolean show,String base){Parsed r=new Parsed();if(!show)return r;try{if(mode==3){r.scheme=new SchemaDocument(input);return r;}r.model=mode==1?paletteEdits.evaluate(base,input):evaluatePatched(base,input);if(mode==0){r.services=new ThemeServiceConfig[]{ThemeServiceConfig.read(r.model,"ai_config"),ThemeServiceConfig.read(r.model,"asr_config")};try{r.presetKeys=PresetKeyConfig.read(r.model,evaluate(readDefaultTheme()));}catch(Exception e){r.presetError=e.getMessage();}}if(mode==1)buildPalette(r);if(mode==2){Globals theme=null;try{theme=evaluateFile(new File(Config.getThemeDir(Config.getTheme()),"main.lua"));r.presetKeys=PresetKeyConfig.read(theme,evaluate(readDefaultTheme()));}catch(Exception e){r.presetError=e.toString();if(theme==null)try{theme=evaluate(readDefaultTheme());r.presetKeys=PresetKeyConfig.read(theme,theme);}catch(Exception ignored){}}loadKeyboardPalette(r,theme);}}catch(Exception e){r.failure=e;}return r;}
+    private void buildPalette(Parsed r){
+        r.palette=r.model;r.schema=new PaletteProperties(r.model,paletteCatalog());r.groups=new PaletteGroupSnapshot(r.model,r.schema);
+        String theme=Config.getTheme();
+        if(palettePresetCache==null||!theme.equals(palettePresetTheme)){
+            try{Globals defaults=evaluate(readDefaultTheme());Globals selected=defaults;
+                try{selected=evaluateFile(new File(Config.getThemeDir(theme),"main.lua"));}catch(Exception ignored){}
+                palettePresetCache=PresetKeyConfig.read(selected,defaults);palettePresetTheme=theme;
+            }catch(Exception e){r.presetError=e.getMessage();}
+        }
+        r.presetKeys=palettePresetCache;
+    }
     private void install(Parsed r){model=r.model;palette=r.palette;paletteSchema=r.schema;paletteGroups=r.groups;parseFailure=r.failure;activeStyleDir=r.styleDir;themeServices=r.services;presetKeys=r.presetKeys;presetError=r.presetError;paletteNotice=r.paletteNotice;schemeDocument=r.scheme;}
     private String paletteNotice;
     private String readAsset(String path) throws IOException {try(InputStream in=getAssets().open(path);ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);return new String(out.toByteArray(),StandardCharsets.UTF_8);}}
     private void loadKeyboardPalette(Parsed r,Globals theme){
         String name=Config.getStyle();File dir=new File(Config.getStyleDir(name));
-        try{File base=new File(dir,"main.lua");String baseText=read(base);r.palette=evaluatePalette(baseText,theme);LuaPatchManager.applyChecked(r.palette,r.palette,baseText,LuaPatchManager.read(base));r.styleDir=dir;r.paletteNotice="当前配色："+name;return;}catch(Exception e){r.paletteNotice="当前配色加载失败，使用内置白昼预览："+e.getMessage();}
-        try{r.palette=evaluatePalette(readAsset("themes/default/styles/light/main.lua"),theme);r.styleDir=new File(Config.getStyleDir("light"));}catch(Exception e){r.paletteNotice="配色解析失败："+e.getMessage();}
+        try{File base=new File(dir,"main.lua");String baseText=read(base);r.palette=evaluatePalette(baseText,theme);LuaPatchManager.applyChecked(r.palette,r.palette,baseText,LuaPatchManager.read(base));r.styleDir=dir;r.paletteNotice="当前样式："+name;return;}catch(Exception e){r.paletteNotice="当前样式加载失败，使用内置白昼预览："+e.getMessage();}
+        try{r.palette=evaluatePalette(readAsset("themes/default/styles/light/main.lua"),theme);r.styleDir=new File(Config.getStyleDir("light"));}catch(Exception e){r.paletteNotice="样式解析失败："+e.getMessage();}
     }
     private Globals evaluatePalette(String input,Globals theme){Globals g=evaluate("");if(theme!=null){org.luaj.LuaTable mt=new org.luaj.LuaTable();mt.set("__index",theme);g.setmetatable(mt);}g.load(input,"palette preview").call();return g;}
     private final Set<String> keyboardKeyStyles=new HashSet<>();
@@ -121,20 +145,24 @@ public class EditorActivity extends Activity {
     private String eventLabel(LuaValue event,int depth){
         if(depth>8||event.isnil())return "";
         if(event.istable()){
-            LuaValue label=event.get("label");if(!label.isnil())return label.tojstring();
-            LuaValue states=event.get("states");if(states.istable()&&!states.get(1).isnil())return states.get(1).tojstring();
+            LuaValue states=event.get("states");
+            if(event.get("options").istable()&&states.istable()&&states.length()>0){int index=Math.max(1,Math.min(states.length(),event.get("reset").optint(0)+1));return states.get(index).optjstring("");}
+            if(!event.get("toggle").optjstring("").isEmpty()&&states.istable()&&!states.get(1).isnil())return states.get(1).tojstring();
+            LuaValue label=event.get("label");if(!label.isnil()&&!label.tojstring().isEmpty())return label.tojstring();
+            if(states.istable()&&!states.get(1).isnil())return states.get(1).tojstring();
             for(String field:new String[]{"click","text","send","commit"})if(!event.get(field).isnil())return eventLabel(event.get(field),depth+1);
             return "";
         }
         String name=event.tojstring();
-        if(mode==2&&presetKeys!=null){for(PresetKeyConfig preset:presetKeys){if(!preset.name.equals(name))continue;String label=preset.values[0];if(label!=null&&!label.isEmpty())return label;if(preset.states!=null&&preset.states.length>0&&preset.states[0]!=null)return preset.states[0];break;}return name;}
+        if((mode==1||mode==2)&&presetKeys!=null){for(PresetKeyConfig preset:presetKeys){if(!preset.name.equals(name))continue;if(preset.values[8]!=null&&!preset.values[8].isEmpty()&&preset.states!=null&&preset.states.length>0&&preset.states[0]!=null)return preset.states[0];String label=preset.values[0];if(label!=null&&!label.isEmpty())return label;if(preset.states!=null&&preset.states.length>0&&preset.states[0]!=null)return preset.states[0];break;}return name;}
+        if(mode==1)return name;
         try{LuaValue preset=com.osfans.trime.Key.presetKeys.get(name);if(preset.istable()){
             LuaValue label=preset.get("label");if(!label.isnil()&&!label.tojstring().isEmpty())return label.tojstring();
             LuaValue states=preset.get("states");if(states.istable()&&!states.get(1).isnil())return states.get(1).tojstring();
         }}catch(Exception ignored){}
         return name;
     }
-    private final String[] titles = {"主题编辑器", "配色编辑器", "键盘编辑器", "方案编辑器"};
+    private final String[] titles = {"主题编辑器", "样式编辑器", "键盘编辑器", "方案编辑器"};
     @Override public void onCreate(Bundle state) {
         setTheme(Build.VERSION.SDK_INT >= 29 ? android.R.style.Theme_DeviceDefault_DayNight : android.R.style.Theme_DeviceDefault);
         requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
@@ -264,8 +292,9 @@ public class EditorActivity extends Activity {
     private Globals evaluatePatched(String base,String patch){Globals g=evaluate(base);LuaPatchManager.applyChecked(g,g,base,patch);return g;}
     private Globals evaluateFile(File f)throws IOException{return evaluatePatched(read(f),LuaPatchManager.read(f));}
     private String compact(String previous,String code){Globals g=evaluate(baseSource);LuaPatchManager.Snapshot before=new LuaPatchManager.Snapshot(g);LuaPatchManager.applyChecked(g,g,baseSource,previous);g.load(code,"editor change").call();return LuaPatchManager.bindToBase(baseSource,before.delta());}
-    private Globals evaluate(String s){Globals g=JsePlatform.standardGlobals();for(String k:new String[]{"io","os","luajava","debug","package","require","dofile","loadfile","load","loadstring","module"})g.set(k,LuaValue.NIL);g.load(s,"editor").call();return g;}
-    private void render(){cancelPaletteList();paletteDetail=null;paletteList=null;paletteDetailGroup=null;if(codePane!=null){if(codeEditor!=null)codeEditor.cancelSpanning();root.removeView(codePane);codePane=null;codeEditor=null;}scroll.setVisibility(View.VISIBLE);panel.removeAllViews();refreshEditorMenu();if(file==null)return;if(mergeDraft!=null){renderMergePreview();return;}if(editingBase||!visual){renderLuaSource();return;}updateEditorSubtitle(false);
+    private Globals newEditorGlobals(){Globals g=JsePlatform.standardGlobals();for(String k:new String[]{"io","os","luajava","debug","package","require","dofile","loadfile","load","loadstring","module"})g.set(k,LuaValue.NIL);return g;}
+    private Globals evaluate(String s){Globals g=newEditorGlobals();g.load(s,"editor").call();return g;}
+    private void render(){cancelPaletteOverview();cancelPaletteList();paletteOverview=null;paletteDetail=null;paletteList=null;paletteButtonLists=null;paletteButtonGroup=null;paletteDetailGroup=null;if(codePane!=null){if(codeEditor!=null)codeEditor.cancelSpanning();root.removeView(codePane);codePane=null;codeEditor=null;}scroll.setVisibility(View.VISIBLE);panel.removeAllViews();refreshEditorMenu();if(file==null)return;if(mergeDraft!=null){renderMergePreview();return;}if(editingBase||!visual){renderLuaSource();return;}updateEditorSubtitle(false);
         try{if(parseFailure!=null)throw parseFailure;if(mode==0){section(panel,"主题属性","编辑主题基本信息及默认资源。");for(String k:new String[]{"name","author","style","keyboard"})field(panel,k,k,false);if(themeServices!=null)for(ThemeServiceConfig service:themeServices)renderThemeService(service);renderPresetKeys();}
         if(mode==1){renderPalette();}
         if(mode==2)renderKeyboardEditor();
@@ -444,7 +473,7 @@ public class EditorActivity extends Activity {
     private String propertyName(String key) {
         switch(key) {
             case "name": return "名称"; case "author": return "作者";
-            case "style": return "样式"; case "keyboard": return "键盘";
+            case "keys": return "按钮列表"; case "style": return "样式"; case "hide": return "收起按钮"; case "tool_bar": return "工具按钮栏"; case "tab_bar": return "标签栏"; case "filter_bar": return "筛选栏"; case "item": return "列表项"; case "text": return "文字标签"; case "window": return "窗口组件"; case "sound_effect": return "声音文件"; case "vibration_effect": return "振动波形"; case "keyboard": return "键盘";
             case "hint_long": return "长按助记"; case "hint_up": return "上滑助记"; case "hint_down": return "下滑助记"; case "hint_left": return "左滑助记"; case "hint_right": return "右滑助记"; case "label": return "标签"; case "click": return "单击";
             case "long_click": return "长按"; case "swipe_left": return "左滑";
             case "swipe_right": return "右滑"; case "swipe_up": return "上滑";
@@ -460,18 +489,24 @@ public class EditorActivity extends Activity {
         }
     }
     private String propertyTitle(String path) {
+        if(path.startsWith("composition.key.pressed.hint."))return "悬浮窗口 · 高亮候选序号 · "+propertyTitle(path.substring("composition.key.pressed.hint.".length()));
+        if(path.startsWith("composition.key.hint."))return "悬浮窗口 · 候选序号 · "+propertyTitle(path.substring("composition.key.hint.".length()));
+        if(path.equals("composition.key.pressed.hint"))return "悬浮窗口 · 高亮候选序号";
+        if(path.equals("composition.key.hint"))return "悬浮窗口 · 候选序号";
         StringBuilder title = new StringBuilder();
         for(String part:path.split("\\.")) { if(title.length()>0)title.append(" · "); title.append(propertyName(part)); }
         return title.toString();
     }
-    private void field(LinearLayout l,String name,String p,boolean color) {
+    private void field(LinearLayout l,String name,String p,boolean color){field(l,name,p,color,-1);}
+    private void field(LinearLayout l,String name,String p,boolean color,int position) {
         PaletteGroupSnapshot.Field cached=mode==1&&paletteGroups!=null?paletteGroups.field(p):null;
         LuaValue actual=mode==1?(cached==null?new PaletteResolver(model).value(p):cached.actual):value(model,p);
         LuaValue old=mode==1&&actual.isnil()?paletteSchema.fields.getOrDefault(p,LuaValue.NIL):actual;
         String propertyOrigin=mode==1?(cached==null?new PaletteResolver(model).origin(p):cached.origin):"";
-        LinearLayout item=new LinearLayout(this); item.setGravity(android.view.Gravity.CENTER_VERTICAL); item.setPadding(dp(14),dp(12),dp(14),dp(12)); item.setMinimumHeight(dp(68)); ui.clickable(item,ui.surface,14,ui.outline); LinearLayout.LayoutParams itemLp=new LinearLayout.LayoutParams(-1,-2); itemLp.setMargins(0,dp(4),0,dp(4)); l.addView(item,itemLp);
+        LinearLayout item=new LinearLayout(this); item.setGravity(android.view.Gravity.CENTER_VERTICAL); item.setPadding(dp(14),dp(12),dp(14),dp(12)); item.setMinimumHeight(dp(68)); ui.clickable(item,ui.surface,14,ui.outline); LinearLayout.LayoutParams itemLp=new LinearLayout.LayoutParams(-1,-2); itemLp.setMargins(0,dp(4),0,dp(4)); l.addView(item,position,itemLp);if(mode==1)item.setTag(p);
         LinearLayout labels=column();labels.setPadding(0,0,dp(8),0);item.addView(labels,new LinearLayout.LayoutParams(0,-2,1)); labels.addView(ui.label(propertyTitle(name),15,ui.ink,true)); labels.addView(ui.label(display(old,color),13,ui.muted,false)); if(mode==1)labels.addView(ui.label(propertyOrigin,12,ui.muted,false));
         if(color&&old.type()==LuaValue.TNUMBER){View chip=new View(this);chip.setBackground(ui.shape((int)old.tolong(),10,ui.outline));item.addView(chip,new LinearLayout.LayoutParams(dp(34),dp(34)));} TextView arrow=ui.label("  ›",23,ui.muted,false);item.addView(arrow); item.setContentDescription(propertyTitle(name)+"，"+display(old,color)); item.setOnClickListener(v->{
+            if(busy||destroyed)return;
             if(mode==1&&!color&&(old.type()==LuaValue.TNUMBER||old.isboolean())){editScalar(p,old);return;}
             previewPath=p;cancelPreview();
             EditText edit=new EditText(this); edit.setSingleLine(true); edit.setText(display(old,color)); styleInput(edit);
@@ -509,39 +544,133 @@ public class EditorActivity extends Activity {
                 });
             } else {box.addView(edit); if(mode==1){LinearLayout live=column();box.addView(live);previewFocused(live);edit.addTextChangedListener(new TextWatcher(){public void beforeTextChanged(CharSequence s,int st,int c,int a){} public void afterTextChanged(Editable e){} public void onTextChanged(CharSequence s,int st,int before,int count){temporaryPreview(live,p,quote(s.toString()));}});}}
             AlertDialog dialog=new AlertDialog.Builder(this).setTitle(propertyTitle(name)).setView(wrap(box)).setNegativeButton("取消",null).setPositiveButton("应用",null).create();
-            dialog.setOnShowListener(d->dialog.getButton(-1).setOnClickListener(x->{try{String input=edit.getText().toString();if(color&&input.startsWith("#"))Color.parseColor(input);if(color&&!input.startsWith("#")&&!p.endsWith("background"))throw new IllegalArgumentException("请输入颜色");if(change(mode==1?paletteAssignment(p,color&&p.endsWith("background")&&!input.startsWith("#")?quote(input):literal(input,old,color)):p+" = "+literal(input,old,color)))dialog.dismiss();}catch(Exception e){edit.setError(color?"请输入有效的十六进制颜色值":e.getMessage());}}));dialog.show();
+            dialog.setOnShowListener(d->dialog.getButton(-1).setOnClickListener(x->{try{String input=edit.getText().toString();if(color&&input.startsWith("#"))Color.parseColor(input);if(color&&!input.startsWith("#")&&!p.endsWith("background"))throw new IllegalArgumentException("请输入颜色");String val=mode==1&&color&&p.endsWith("background")&&!input.startsWith("#")?quote(input):literal(input,old,color);if(mode==1?changePalette(p,val,false):change(p+" = "+val))dialog.dismiss();}catch(Exception e){edit.setError(color?"请输入有效的十六进制颜色值":e.getMessage());}}));dialog.show();
             dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         });
         if(mode==1)item.setOnLongClickListener(v->{
+            if(busy||destroyed)return true;
             PaletteResolver resolver=new PaletteResolver(model);String origin=resolver.sourcePath(p);
             new AlertDialog.Builder(this).setTitle(resolver.origin(p)).setItems(new String[]{"编辑当前属性（共享表同步修改）","编辑来源属性","解除共享并保留当前值","清除当前覆盖"},(d,n)->{
                 if(n==0)item.performClick();
                 if(n==1){if(origin==null||origin.equals(p))item.performClick();else {LinearLayout hidden=column();field(hidden,origin,origin,PaletteProperties.color(origin));hidden.getChildAt(0).performClick();}}
-                if(n==2){if(old.istable()||old.isnil()){Toast.makeText(this,"请先设置标量值",Toast.LENGTH_SHORT).show();return;}String lit=old.type()==LuaValue.TSTRING?quote(old.tojstring()):old.tojstring();change(paletteAssignment(p,lit,true));}
-                if(n==3&&!resolver.rawPath(p).isnil())change(paletteAssignment(p,"nil",true));
+                if(n==2){if(old.istable()||old.isnil()){Toast.makeText(this,"请先设置标量值",Toast.LENGTH_SHORT).show();return;}String lit=old.type()==LuaValue.TSTRING?quote(old.tojstring()):old.tojstring();changePalette(p,lit,true);}
+                if(n==3&&!resolver.rawPath(p).isnil())changePalette(p,"nil",true);
             }).show();return true;
         });
     }
-    private String paletteAssignment(String p,String literal){return paletteAssignment(p,literal,false);}
-    private String paletteAssignment(String p,String literal,boolean detach){return PaletteProperties.assignment(p,literal,detach,new PaletteResolver(model));}
+    private boolean changePalette(String path,String literal,boolean detach){
+        if(busy||destroyed)return false;
+        final String previous=source,base=baseSource;final int y=scroll.getScrollY();
+        // Avoid a modal window flash for quick edits. All config actions check busy.
+        background("正在应用修改…",180,()->{
+            PaletteEditSession.Result edit=paletteEdits.edit(base,previous,path,literal,detach);
+            if(edit.model==null)return new AbstractMap.SimpleImmutableEntry<String,Parsed>(previous,null);
+            Parsed parsed=new Parsed();parsed.model=edit.model;buildPalette(parsed);
+            return new AbstractMap.SimpleImmutableEntry<>(edit.patch,parsed);
+        },r->{
+            if(r.getValue()==null)return;
+            PaletteProperties oldSchema=paletteSchema;PaletteGroupSnapshot oldGroups=paletteGroups;
+            source=r.getKey();install(r.getValue());refreshPaletteAfterChange(oldSchema,oldGroups,y);
+        });return true;
+    }
     private boolean change(String code){if(busy||destroyed)return false;final String previous=source;int y=scroll.getScrollY();background("正在应用修改…",()->{String next=compact(previous,code);Parsed r=parse(next,true);if(r.failure!=null)throw r.failure;return new AbstractMap.SimpleImmutableEntry<>(next,r);},r->{source=r.getKey();install(r.getValue());render();if(mode==1&&paletteListFrame!=null)paletteRestoreY=y;else scroll.post(()->scroll.scrollTo(0,y));});return true;}
-    private List<LuaValue> builtinPalettes(){if(builtinPalettes!=null)return builtinPalettes;builtinPalettes=new ArrayList<>();try{String dir="themes/default/styles";for(String name:getAssets().list(dir)){try(InputStream in=getAssets().open(dir+"/"+name+"/main.lua");ByteArrayOutputStream out=new ByteArrayOutputStream()){byte[] buf=new byte[4096];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);builtinPalettes.add(evaluate(new String(out.toByteArray(),StandardCharsets.UTF_8)));}catch(Exception ignored){}}}catch(IOException ignored){}return builtinPalettes;}
+    private PaletteProperties.Catalog paletteCatalog(){
+        if(paletteCatalog!=null)return paletteCatalog;
+        List<LuaValue> defaults=new ArrayList<>();
+        try{String dir="themes/default/styles";for(String name:getAssets().list(dir)){
+            try{defaults.add(evaluate(readAsset(dir+"/"+name+"/main.lua")));}catch(Exception ignored){}
+        }}catch(IOException ignored){}
+        paletteCatalog=PaletteProperties.catalog(defaults);return paletteCatalog;
+    }
     private void renderPalette(){
         Set<String> groups=paletteGroups.names();
-        if(groups.isEmpty()){text(panel,"没有可编辑的配色属性");return;}
+        if(groups.isEmpty()){text(panel,"没有可编辑的样式属性");return;}
         if(!groups.contains(paletteGroup))paletteGroup=groups.iterator().next();
         section(panel,"实时预览","示例键盘与当前属性状态；修改后即时刷新");
         previewPath=paletteGroup;
         LinearLayout preview=card(panel);
-        previewKeyboardOverview(preview);
+        paletteOverview=column();paletteOverview.setPadding(0,0,0,0);preview.addView(paletteOverview);
+        previewKeyboardOverview(paletteOverview);
         paletteDetail=column();paletteDetail.setPadding(0,0,0,0);preview.addView(paletteDetail);
-        section(panel,"配色属性",null);
+        section(panel,"样式属性",null);
         String[] names=groups.toArray(new String[0]);String[] labels=new String[names.length];for(int i=0;i<names.length;i++)labels[i]=propertyName(names[i]);
         addPaletteGroupSelector(names,labels);
         Switch optional=new Switch(this);optional.setText("显示未设置的可选属性");optional.setChecked(showOptional);panel.addView(optional);
+        paletteButtonLists=column();paletteButtonLists.setPadding(0,0,0,0);panel.addView(paletteButtonLists);
         paletteList=column();panel.addView(paletteList);
         refreshPaletteGroup(true);
         optional.setOnCheckedChangeListener((v,checked)->{if(busy||destroyed){if(checked!=showOptional)optional.setChecked(showOptional);return;}showOptional=checked;refreshPaletteGroup(false);});
+    }
+    /** Keep the selector and unchanged rows alive on an ordinary property edit. */
+    private void refreshPaletteAfterChange(PaletteProperties oldSchema,PaletteGroupSnapshot oldGroups,int y){
+        if(paletteOverview==null||paletteDetail==null||paletteList==null||oldGroups==null||oldSchema==null
+                ||!new ArrayList<>(oldGroups.names()).equals(new ArrayList<>(paletteGroups.names()))){
+            render();if(paletteListFrame!=null)paletteRestoreY=y;else scroll.post(()->scroll.scrollTo(0,y));return;
+        }
+        updateEditorSubtitle(false);previewPath=paletteGroup;
+        // Reuse rows only if the previous list is complete and its path order is unchanged.
+        List<PaletteGroupSnapshot.Field> before=oldGroups.rows(paletteGroup,showOptional),after=paletteGroups.rows(paletteGroup,showOptional);
+        List<Integer> changed=paletteListFrame==null?PaletteGroupSnapshot.changedRows(before,oldSchema,after,paletteSchema):null;
+        if(changed!=null&&changed.size()<=8&&replacePaletteRows(after,changed)){
+            cancelPaletteList();
+            final long generation=paletteListVersion;
+            final String group=paletteGroup;final LinearLayout sample=paletteDetail;
+            paletteDetailGroup=null;
+            // Schedule the small detail refresh without destroying any of the row controls.
+            paletteListFrame=()->{
+                if(destroyed||generation!=paletteListVersion||sample!=paletteDetail||!sample.isAttachedToWindow())return;
+                sample.removeAllViews();String old=previewPath;
+                try{previewPath=group;previewGroupDetail(sample);}catch(Exception e){text(sample,"无法生成属性样例："+e.getMessage());}finally{previewPath=old;}
+                paletteDetailGroup=group;refreshStyleButtonLists(group);finishPaletteList(generation);
+            };
+            panel.postOnAnimation(paletteListFrame);
+        }else{
+            refreshPaletteGroup(true);paletteRestoreY=y;
+        }
+        schedulePaletteOverview();
+    }
+    private boolean replacePaletteRows(List<PaletteGroupSnapshot.Field> rows,List<Integer> changed){
+        if(changed.isEmpty())return true;
+        ArrayList<Integer> positions=new ArrayList<>();int index=0;
+        for(int i=0;i<paletteList.getChildCount();i++){
+            Object tag=paletteList.getChildAt(i).getTag();if(!(tag instanceof String))continue;
+            if(index>=rows.size()||!rows.get(index).path.equals(tag))return false;
+            positions.add(i);index++;
+        }
+        if(index!=rows.size())return false;
+        for(int i:changed){int position=positions.get(i);String path=rows.get(i).path;paletteList.removeViewAt(position);field(paletteList,path,path,PaletteProperties.color(path),position);}
+        return true;
+    }
+    private void cancelPaletteOverview(){
+        paletteOverviewVersion++;
+        if(paletteOverviewFrame!=null){panel.removeCallbacks(paletteOverviewFrame);paletteOverviewFrame=null;}
+    }
+    /** Build the full preview in small frame-sized pieces; leave the previous preview
+     * visible until the replacement is ready. All sections are refreshed because a
+     * shared style can affect another component. */
+    private void schedulePaletteOverview(){
+        cancelPaletteOverview();
+        final long generation=paletteOverviewVersion;final Globals expected=model;
+        final LinearLayout target=paletteOverview, replacement=column();final String group=paletteGroup;
+        paletteOverviewFrame=new Runnable(){
+            int stage;LinearLayout keyboard;
+            public void run(){
+                if(destroyed||generation!=paletteOverviewVersion||expected!=model||target!=paletteOverview||!target.isAttachedToWindow())return;
+                String old=previewPath;previewPath=group;
+                try{
+                    switch(stage++){
+                        case 0:replacement.setBackground(ui.shape(color("background",Color.LTGRAY),14,0));compositionSample(replacement,true);toolbarSample(replacement);break;
+                        case 1:previewOverviewCandidates(replacement);keyboard=sampleKeyboardContainer(replacement);sampleKeyboardRow(keyboard,"QWERTYUIOP","key",false);break;
+                        case 2:sampleKeyboardRow(keyboard,"ASDFGHJKL","key",false);break;
+                        case 3:sampleKeyboardRow(keyboard,"ZXCVBNM","key",false);break;
+                        default:finishSampleKeyboard(replacement,keyboard,"key",false);target.removeAllViews();target.addView(replacement);paletteOverviewFrame=null;return;
+                    }
+                }catch(Exception e){target.removeAllViews();text(target,"无法生成预览："+e.getMessage());paletteOverviewFrame=null;return;}
+                finally{previewPath=old;}
+                panel.postOnAnimation(this);
+            }
+        };
+        panel.postOnAnimation(paletteOverviewFrame);
     }
     private void cancelPaletteList(){
         paletteListVersion++;
@@ -568,6 +697,111 @@ public class EditorActivity extends Activity {
         };
         panel.getViewTreeObserver().addOnGlobalLayoutListener(paletteRestoreLayout);
     }
+    private String styleButtonLabel(String path,LuaValue entry){
+        if(entry.type()==LuaValue.TSTRING){String label=StyleButtonLists.fixedLabel(path,entry.tojstring());if(label!=null)return label;}
+        return eventLabel(entry);
+    }
+    private LuaValue styleButtons(String path){return StyleButtonLists.read(palette,path);}
+    private void refreshStyleButtonLists(String group){
+        if(paletteButtonLists==null)return;paletteButtonLists.removeAllViews();paletteButtonGroup=group;
+        for(String path:StyleButtonLists.PATHS)if(path.startsWith(group+".")){
+            LinearLayout box=card(paletteButtonLists);section(box,propertyTitle(path),null);
+            LuaValue configured=StyleButtonLists.configured(palette,path);
+            if(!configured.isnil()&&!configured.istable()){text(box,"按钮列表不是 Lua table，请在源码模式修正。");continue;}
+            LuaValue entries=styleButtons(path);int count=entries.length();
+            text(box,count+" 个按钮"+(configured.istable()?"":" · 默认列表"));
+            styleButtonPreview(box,path);
+            button(box,"管理按钮列表",v->manageStyleButtons(path));
+        }
+    }
+    private boolean changeStyleButtons(String path,StyleButtonLists.Edit edit){
+        if(busy||destroyed)return false;
+        final String previous=source,base=baseSource;final int y=scroll.getScrollY();
+        background("正在应用按钮列表…",180,()->{
+            PaletteEditSession.Result result=paletteEdits.editButtons(base,previous,path,edit);
+            if(result.model==null)return new AbstractMap.SimpleImmutableEntry<String,Parsed>(previous,null);
+            Parsed parsed=new Parsed();parsed.model=result.model;buildPalette(parsed);
+            return new AbstractMap.SimpleImmutableEntry<>(result.patch,parsed);
+        },r->{if(r.getValue()==null)return;PaletteProperties oldSchema=paletteSchema;PaletteGroupSnapshot oldGroups=paletteGroups;source=r.getKey();install(r.getValue());refreshPaletteAfterChange(oldSchema,oldGroups,y);});
+        return true;
+    }
+    private void manageStyleButtons(String path){
+        if(busy||destroyed)return;LuaValue entries=styleButtons(path);int n=entries.length();
+        LinearLayout box=column();styleButtonPreview(box,path);
+        if(n==0)text(box,"暂无按钮，可直接添加。");
+        ListView list=new ListView(this);list.setDividerHeight(dp(1));
+        ArrayList<Integer> positions=new ArrayList<>();for(int i=1;i<=n;i++)positions.add(i);
+        list.setAdapter(new ArrayAdapter<Integer>(this,android.R.layout.simple_list_item_1,positions){
+            @Override public View getView(int pos,View convert,android.view.ViewGroup parent){
+                int i=getItem(pos);LuaValue entry=entries.get(i);
+                LinearLayout row=new LinearLayout(EditorActivity.this);row.setGravity(android.view.Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(5),dp(8),dp(5));
+                String label=styleButtonLabel(path,entry),style=styleButtonStyle(path,entry);
+                TextView face=buttonFace(label,style,false);face.setMinimumWidth(dp(44));row.addView(face,new LinearLayout.LayoutParams(-2,dp(42)));
+                LinearLayout info=column();info.setPadding(dp(10),0,0,0);row.addView(info,new LinearLayout.LayoutParams(0,-2,1));
+                info.addView(ui.label(i+". "+(label.isEmpty()?"空标签":label),15,ui.ink,true));
+                info.addView(ui.label(entry.istable()?"自定义按钮 / 状态开关":entry.tojstring(),12,ui.muted,false));
+                row.addView(ui.label("›",22,ui.muted,false));return row;
+            }
+        });
+        box.addView(list,new LinearLayout.LayoutParams(-1,dp(n==0?56:Math.min(300,n*65))));
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(propertyTitle(path)).setView(box)
+            .setNegativeButton("关闭",null).setPositiveButton("添加按钮",(d,w)->editStyleButton(path,n+1,LuaValue.NIL)).create();
+        list.setOnItemClickListener((a,b,pos,id)->{dialog.dismiss();styleButtonActions(path,pos+1,entries.get(pos+1),n);});dialog.show();
+    }
+    private void styleButtonActions(String path,int index,LuaValue entry,int count){
+        if(busy||destroyed)return;ArrayList<String> labels=new ArrayList<>();ArrayList<Runnable> actions=new ArrayList<>();
+        labels.add("编辑按钮");actions.add(()->editStyleButton(path,index,entry));
+        labels.add("在前面添加");actions.add(()->editStyleButton(path,index,LuaValue.NIL));
+        labels.add("在后面添加");actions.add(()->editStyleButton(path,index+1,LuaValue.NIL));
+        if(index>1){labels.add("向前移动");actions.add(()->changeStyleButtons(path,l->StyleButtonLists.swap(l,index,index-1)));}
+        if(index<count){labels.add("向后移动");actions.add(()->changeStyleButtons(path,l->StyleButtonLists.swap(l,index,index+1)));}
+        labels.add("删除按钮");actions.add(()->new AlertDialog.Builder(this).setMessage("删除此按钮？").setNegativeButton("取消",null).setPositiveButton("删除",(d,w)->changeStyleButtons(path,l->StyleButtonLists.remove(l,index))).show());
+        new AlertDialog.Builder(this).setTitle(styleButtonLabel(path,entry)).setItems(labels.toArray(new String[0]),(d,i)->actions.get(i).run()).setNegativeButton("取消",null).show();
+    }
+    private void editStyleButton(String path,int index,LuaValue entry){
+        if(busy||destroyed)return;boolean adding=entry.isnil(),table=entry.istable();boolean toolbar=StyleButtonLists.TOOLBAR.equals(path);
+        LinearLayout box=column();EditText label=new EditText(this);styleInput(label);label.setSingleLine(true);
+        if(table){
+            // Existing table fields, options, states, gestures and functions are never serialized or flattened here.
+            if(!toolbar||entry.get("options").istable()){text(box,"状态开关或复杂按钮可在源码中编辑；列表支持删除和移动。");new AlertDialog.Builder(this).setTitle("按钮配置").setView(box).setPositiveButton("关闭",null).show();return;}
+            text(box,"显示标签（留空恢复事件标签）");label.setText(entry.get("label").optjstring(""));box.addView(label);
+            new AlertDialog.Builder(this).setTitle("编辑按钮标签").setView(box).setNegativeButton("取消",null).setPositiveButton("应用",(d,w)->{
+                String value=label.getText().toString();changeStyleButtons(path,l->StyleButtonLists.label(l,index,value));
+            }).show();return;
+        }
+        if(!adding&&entry.type()!=LuaValue.TSTRING){text(box,"该项不是字符串事件，请使用源码编辑。");new AlertDialog.Builder(this).setView(box).setPositiveButton("关闭",null).show();return;}
+        String[] selected={adding?"":entry.tojstring()};text(box,"按键事件 · 预设按键或直接输入");addKeyEventSelector(box,"click",selected,0);
+        if(!toolbar){
+            String[] special=StyleButtonLists.defaults(path);button(box,"选择面板常用按钮",v->{
+                String[] names=new String[special.length];for(int i=0;i<special.length;i++)names[i]=styleButtonLabel(path,LuaValue.valueOf(special[i]))+" · "+special[i];
+                new AlertDialog.Builder(this).setItems(names,(d,w)->{selected[0]=special[w]; // replace only the selection row, not the dialog
+                    box.removeViewAt(1);LinearLayout holder=new LinearLayout(this);holder.setOrientation(LinearLayout.VERTICAL);addKeyEventSelector(holder,"click",selected,0);View row=holder.getChildAt(0);holder.removeView(row);box.addView(row,1);
+                }).setNegativeButton("取消",null).show();
+            });
+        }else{ text(box,"自定义显示标签（可选）");label.setHint("留空使用预设标签");box.addView(label); }
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(adding?"添加按钮":"编辑按钮").setView(box).setNegativeButton("取消",null).setPositiveButton("应用",null).create();
+        dialog.setOnShowListener(d->dialog.getButton(-1).setOnClickListener(v->{
+            String event=selected[0],custom=toolbar?label.getText().toString():"";
+            if(event.trim().isEmpty()){Toast.makeText(this,"请选择或输入事件",Toast.LENGTH_SHORT).show();return;}
+            if(changeStyleButtons(path,l->{if(adding)StyleButtonLists.insert(l,index,event,custom);else StyleButtonLists.replace(l,index,event,custom);}))dialog.dismiss();
+        }));dialog.show();
+    }
+    private String styleButtonStyle(String path,LuaValue entry){
+        String owner=path.equals(StyleButtonLists.TOOLBAR)?"toolbar.key":path.substring(0,path.indexOf(".tool_bar"))+".key";
+        if(path.equals(StyleButtonLists.TOOLBAR)&&entry.istable()&&!entry.get("options").istable()){
+            String style=entry.get("style").optjstring(owner);if(value(palette,style).istable())return style;
+        }return owner;
+    }
+    private void styleButtonPreview(LinearLayout parent,String path){
+        HorizontalScrollView scroll=new HorizontalScrollView(this);scroll.setHorizontalScrollBarEnabled(false);parent.addView(scroll,new LinearLayout.LayoutParams(-1,-2));
+        LinearLayout row=new LinearLayout(this);scroll.addView(row,new FrameLayout.LayoutParams(-2,-2));
+        String container=path.substring(0,path.lastIndexOf('.'));previewBackground(row,container,Color.TRANSPARENT);
+        LuaValue entries=styleButtons(path);int h=Math.max(dp(24),size(container,"height",42,180));
+        for(int i=1;i<=Math.min(entries.length(),24);i++){
+            LuaValue e=entries.get(i);String style=styleButtonStyle(path,e);TextView face=buttonFace(styleButtonLabel(path,e),style,false);face.setMinimumWidth(h);row.addView(face,new LinearLayout.LayoutParams(-2,h));
+        }
+        if(entries.length()==0)text(parent,"空按钮列表");else if(entries.length()>24)text(parent,"预览前 24 项，管理列表可查看全部按钮");
+    }
     private void refreshPaletteGroup(boolean detail){
         cancelPaletteList();
         final long generation=paletteListVersion;
@@ -576,15 +810,18 @@ public class EditorActivity extends Activity {
         final String group=paletteGroup;
         final List<PaletteGroupSnapshot.Field> rows=paletteGroups.rows(group,showOptional);
         list.removeAllViews();
+        final boolean updateButtons=detail||!group.equals(paletteButtonGroup);
+        if(updateButtons&&paletteButtonLists!=null){paletteButtonLists.removeAllViews();paletteButtonGroup=null;}
         final boolean needsDetail=sample!=null&&(detail||!group.equals(paletteDetailGroup));
         if(needsDetail){sample.removeAllViews();paletteDetailGroup=null;}
         // Let the selected label and cleared list paint before creating the next group.
         paletteListFrame=new Runnable(){
-            int index;String previous="";boolean updateDetail=needsDetail;
+            int index;String previous="";boolean updateDetail=needsDetail,updateButtonLists=updateButtons;
             public void run(){
                 if(destroyed||generation!=paletteListVersion||list!=paletteList||!list.isAttachedToWindow())return;
                 if(updateDetail){updateDetail=false;String old=previewPath;try{previewPath=group;previewGroupDetail(sample);}catch(Exception e){text(sample,"无法生成属性样例："+e.getMessage());}finally{previewPath=old;}paletteDetailGroup=group;panel.postOnAnimation(this);return;}
-                if(rows.isEmpty()){text(list,"本组未设置属性，打开上方开关添加。");finishPaletteList(generation);return;}
+                if(updateButtonLists){updateButtonLists=false;refreshStyleButtonLists(group);panel.postOnAnimation(this);return;}
+                if(rows.isEmpty()){text(list,"本组暂无标量属性");finishPaletteList(generation);return;}
                 long start=android.os.SystemClock.uptimeMillis();int count=0;
                 do {
                     PaletteGroupSnapshot.Field row=rows.get(index++);String p=row.path;
@@ -607,10 +844,10 @@ public class EditorActivity extends Activity {
         ui.clickable(anchor, ui.surface, 12, ui.muted);
         anchor.setPadding(dp(14), dp(8), dp(14), dp(8));
         anchor.setFocusable(true);
-        anchor.setContentDescription("配色分组，当前：" + labels[selected[0]] + "，点击展开");
+        anchor.setContentDescription("样式分组，当前：" + labels[selected[0]] + "，点击展开");
         LinearLayout titles = new LinearLayout(this);
         titles.setOrientation(LinearLayout.VERTICAL);
-        titles.addView(ui.label("配色分组", 12, ui.muted, false));
+        titles.addView(ui.label("样式分组", 12, ui.muted, false));
         TextView current = ui.label(labels[selected[0]], 16, ui.ink, true);
         current.setSingleLine(true);
         current.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -654,7 +891,7 @@ public class EditorActivity extends Activity {
             if (!busy&&!destroyed&&!paletteGroup.equals(names[position])) {
                 paletteGroup=names[position];previewPath=paletteGroup;selected[0]=position;
                 current.setText(labels[position]);
-                anchor.setContentDescription("配色分组，当前："+labels[position]+"，点击展开");
+                anchor.setContentDescription("样式分组，当前："+labels[position]+"，点击展开");
                 adapter.notifyDataSetChanged();
                 refreshPaletteGroup(true);
             }
@@ -665,6 +902,7 @@ public class EditorActivity extends Activity {
             anchor.setPadding(dp(14), dp(8), dp(14), dp(8));
         });
         anchor.setOnClickListener(v -> {
+            if(busy||destroyed)return;
             if (popup.isShowing()) { popup.dismiss(); return; }
             popup.setWidth(anchor.getWidth());
             android.graphics.Rect visible = new android.graphics.Rect();
@@ -690,14 +928,14 @@ public class EditorActivity extends Activity {
         });
     }
     private void temporaryPreview(LinearLayout live,String p,String literal){
-        if(busy||destroyed)return;final long version=++previewVersion;final String input=source;
-        latestPreview=()->{if(destroyed||busy)return;if(previewTask!=null){previewTask.cancel(false);previews.purge();}previewTask=previews.submit(()->{try{Globals result=evaluatePatched(baseSource,input);result.load(PaletteProperties.assignment(p,literal,false,new PaletteResolver(result)),"preview").call();main.post(()->{if(destroyed||busy||version!=previewVersion||!live.isAttachedToWindow())return;Globals saved=palette;String oldPath=previewPath;try{palette=result;previewPath=p;live.removeAllViews();previewFocused(live);}finally{palette=saved;previewPath=oldPath;}});}catch(Exception ignored){}});};if(!previewScheduled){previewScheduled=true;pendingPreview=()->{previewScheduled=false;Runnable task=latestPreview;latestPreview=null;if(task!=null)task.run();};main.postDelayed(pendingPreview,48);}
+        if(busy||destroyed)return;final long version=++previewVersion;final String input=source,base=baseSource;
+        latestPreview=()->{if(destroyed||busy)return;if(previewTask!=null){previewTask.cancel(false);previews.purge();}previewTask=previews.submit(()->{try{Globals result=palettePreviewEdits.evaluate(base,input);result.load(PaletteProperties.assignment(p,literal,false,new PaletteResolver(result)),"preview").call();main.post(()->{if(destroyed||busy||version!=previewVersion||!live.isAttachedToWindow())return;Globals saved=palette;String oldPath=previewPath;try{palette=result;previewPath=p;live.removeAllViews();previewFocused(live);}finally{palette=saved;previewPath=oldPath;}});}catch(Exception ignored){}});};if(!previewScheduled){previewScheduled=true;pendingPreview=()->{previewScheduled=false;Runnable task=latestPreview;latestPreview=null;if(task!=null)task.run();};main.postDelayed(pendingPreview,48);}
     }
     private void editScalar(String p,LuaValue old){
         previewPath=p;cancelPreview();LinearLayout box=column();LinearLayout live=column();final String[] selected={old.tojstring()};
         if(old.isboolean()){Switch toggle=new Switch(this);toggle.setText("启用");toggle.setChecked(old.toboolean());box.addView(toggle);toggle.setOnCheckedChangeListener((v,on)->{selected[0]=Boolean.toString(on);temporaryPreview(live,p,selected[0]);});}
         else {String n=p.substring(p.lastIndexOf('.')+1);double start=old.todouble();boolean fractional=n.startsWith("scale_")||n.equals("line_spacing_multiplier")||n.equals("letter_spacing")||start!=Math.rint(start);double step=fractional?.01:1;double min=n.startsWith("translation_")||n.startsWith("offset_")||n.equals("letter_spacing")?-100:n.endsWith("entries")?-1:0;double max=p.contains("vibration_effect.2.")?255:n.endsWith("_time")||p.contains("vibration_effect.1.")?3000:n.startsWith("scale_")||n.equals("line_spacing_multiplier")?3:n.contains("height")||n.contains("width")?800:n.equals("text_size")?80:n.equals("column_count")?20:100;min=Math.min(min,start);max=Math.max(max,start);final double lo=min,increment=Math.max(step,(max-min)/20000d);TextView number=ui.label(selected[0],20,ui.accent,true);box.addView(number);SeekBar seek=new SeekBar(this);seek.setMax(Math.max(1,(int)Math.ceil((max-min)/increment)));seek.setProgress((int)Math.round((start-min)/increment));box.addView(seek);text(box,"范围："+min+" ～ "+max);seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onStartTrackingTouch(SeekBar b){}public void onStopTrackingTouch(SeekBar b){}public void onProgressChanged(SeekBar b,int progress,boolean user){if(!user)return;double v=lo+progress*increment;selected[0]=fractional?String.format(Locale.US,"%.2f",v):Long.toString(Math.round(v));number.setText(selected[0]);temporaryPreview(live,p,selected[0]);}});}
-        box.addView(live);previewFocused(live);new AlertDialog.Builder(this).setTitle(propertyTitle(p)).setView(wrap(box)).setNegativeButton("取消",null).setNeutralButton("清除设置",(d,w)->change(paletteAssignment(p,"nil",true))).setPositiveButton("应用",(d,w)->change(paletteAssignment(p,selected[0]))).show();
+        box.addView(live);previewFocused(live);new AlertDialog.Builder(this).setTitle(propertyTitle(p)).setView(wrap(box)).setNegativeButton("取消",null).setNeutralButton("清除设置",(d,w)->changePalette(p,"nil",true)).setPositiveButton("应用",(d,w)->changePalette(p,selected[0],false)).show();
     }
     private LuaValue inherited(String p,String field){String path=p+"."+field;if(mode==1&&palette==model&&paletteGroups!=null){PaletteGroupSnapshot.Field cached=paletteGroups.field(path);if(cached!=null)return cached.actual;}return previewResolver().value(path);}
     private int color(String p,int fallback){LuaValue v=value(palette,p);return v.type()==LuaValue.TNUMBER?(int)v.tolong():fallback;}
@@ -705,15 +943,52 @@ public class EditorActivity extends Activity {
     private int tint(String p,String f,int fallback){LuaValue v=inherited(p,f);return v.type()==LuaValue.TNUMBER?(int)v.tolong():fallback;}
     private int size(String p,String f,int fallback,int cap){return dp(Math.max(0,Math.min(cap,metric(p,f,fallback))));}
     private TextView keyView(String label,String style){TextView t=new TextView(this);iconLabel(t,label,style,18);t.setGravity(com.osfans.trime.theme.Style.parse(inherited(style,"gravity").optjstring("center"),17));t.setTextColor(tint(style,"text_color",Color.BLACK));t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP,Math.max(1,Math.min(80,metric(style,"text_size",18))));GradientDrawable bg=new GradientDrawable();bg.setColor(tint(style,"background",Color.WHITE));bg.setCornerRadius(size(style,"corner_radius",0,100));bg.setStroke(size(style,"stroke_width",0,30),tint(style,"stroke_color",0));t.setBackground(bg);LuaValue image=inherited(style,"background");if(image.type()==LuaValue.TSTRING){loadBackground(t,image.tojstring());}t.setElevation(size(style,"elevation",0,40));if(Build.VERSION.SDK_INT>=28){t.setOutlineAmbientShadowColor(tint(style,"shadow_color",0));t.setOutlineSpotShadowColor(tint(style,"shadow_color",0));}t.setScaleX(Math.max(0,Math.min(3,metric(style,"scale_x",1))));t.setScaleY(Math.max(0,Math.min(3,metric(style,"scale_y",1))));t.setTranslationX(dp(metric(style,"translation_x",0)+metric(style,"offset_x",0)));t.setTranslationY(dp(metric(style,"translation_y",0)+metric(style,"offset_y",0)));t.setTranslationZ(dp(metric(style,"translation_z",0)));t.setPadding(size(style,"padding.left",0,40),size(style,"padding.top",0,40),size(style,"padding.right",0,40),size(style,"padding.bottom",0,40));LuaValue font=inherited(style,"font");if(font.istable())font=font.get(1);if(font.type()==LuaValue.TSTRING){try{loadFont(t,font.tojstring());}catch(Exception ignored){}}LuaValue show=inherited(style,"show");if(!show.isnil()&&!show.toboolean())t.setVisibility(View.INVISIBLE);return t;}
+    // KeyView.initView sets text size, font, padding and gravity once. applyStateAnimation
+    // changes only background, colors and transforms; ImageSpan is not rebuilt on press.
+    private void previewBackground(View v,String style,int fallback){
+        GradientDrawable bg=new GradientDrawable();bg.setColor(tint(style,"background",fallback));
+        bg.setCornerRadius(size(style,"corner_radius",0,100));bg.setStroke(size(style,"stroke_width",0,30),tint(style,"stroke_color",0));v.setBackground(bg);
+        LuaValue image=inherited(style,"background");if(image.type()==LuaValue.TSTRING)loadBackground(v,image.tojstring());
+    }
+    private TextView buttonFace(String label,String style,boolean pressed){
+        TextView t=new TextView(this);String state=pressed?style+".pressed":style;
+        iconLabel(t,label,style,18);t.setSingleLine(true);t.setIncludeFontPadding(false);
+        t.setGravity(com.osfans.trime.theme.Style.parse(inherited(style,"gravity").optjstring("center"),android.view.Gravity.CENTER));
+        t.setTextColor(tint(state,"text_color",Color.BLACK));t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP,Math.max(1,Math.min(80,metric(style,"text_size",18))));
+        previewBackground(t,state,Color.WHITE);t.setElevation(size(style,"elevation",0,40));
+        if(Build.VERSION.SDK_INT>=28){int shadow=tint(style,"shadow_color",0),active=tint(state,"shadow_color",0);if(pressed&&shadow!=0&&active!=0)shadow=active;t.setOutlineAmbientShadowColor(shadow);t.setOutlineSpotShadowColor(shadow);}
+        t.setPadding(size(style,"padding.left",0,40),size(style,"padding.top",0,40),size(style,"padding.right",0,40),size(style,"padding.bottom",0,40));
+        LuaValue font=inherited(style,"font");if(font.isnil())font=value(palette,"keyboard.font");if(font.istable())font=font.get(1);if(font.type()==LuaValue.TSTRING)loadFont(t,font.tojstring());
+        t.setTranslationX(dp(metric(style,"offset_x",0)+(pressed?metric(state,"translation_x",0):0)));t.setTranslationY(dp(metric(style,"offset_y",0)+(pressed?metric(state,"translation_y",0):0)));
+        if(pressed){t.setScaleX(Math.max(0,Math.min(3,metric(state,"scale_x",1))));t.setScaleY(Math.max(0,Math.min(3,metric(state,"scale_y",1))));t.setTranslationZ(dp(metric(state,"translation_z",0)));}
+        return t;
+    }
+    private TextView popupFace(String label,String style){
+        String p=style+".preview";TextView t=new TextView(this);iconLabel(t,label,style,18);
+        t.setGravity(android.view.Gravity.CENTER);t.setTextColor(tint(p,"text_color",Color.BLACK));t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP,Math.max(1,Math.min(80,metric(p,"text_size",18))));
+        previewBackground(t,p,Color.WHITE);t.setElevation(size(p,"elevation",0,40));
+        if(Build.VERSION.SDK_INT>=28){int shadow=tint(p,"shadow_color",0);t.setOutlineAmbientShadowColor(shadow);t.setOutlineSpotShadowColor(shadow);}
+        t.setScaleX(Math.max(0,Math.min(3,metric(p,"scale_x",1))));t.setScaleY(Math.max(0,Math.min(3,metric(p,"scale_y",1))));return t;
+    }
+    private void previewMask(FrameLayout key,String style){
+        String p=style+".pressed.mask";if(!inherited(p,"show").optboolean(true))return;
+        // mask is rendered only by a KeyView inside KeyboardView. Show configured masks
+        // rather than inventing an overlay for toolbar and candidate buttons.
+        if(!configured(style+".pressed","mask"))return;
+        View v=new View(this);previewBackground(v,p,0x33000000);
+        int w=inherited(p,"width").isnil()?-1:size(p,"width",48,400),h=inherited(p,"height").isnil()?-1:size(p,"height",48,400);
+        key.addView(v,new FrameLayout.LayoutParams(w,h,android.view.Gravity.CENTER));v.setScaleX(metric(p,"scale_x",1));v.setScaleY(metric(p,"scale_y",1));v.setTranslationX(dp(metric(p,"translation_x",0)));v.setTranslationY(dp(metric(p,"translation_y",0)));v.setTranslationZ(Math.max(0,key.getChildAt(0).getZ())+dp(1));
+        key.setTranslationZ(dp(metric(p,"translation_z",0))+dp(32));
+    }
     private boolean inGroup(String p,String group){return p.equals(group)||p.startsWith(group+".");}
     private String previewStyle(String p){int i=p.indexOf(".preview");return i<0?null:p.substring(0,i);}
     private boolean configured(String style,String child){return previewResolver().hasRaw(style,child);}
     private TextView hintLabel(String label,String style,int gravity,boolean pressed){
-        TextView t=new com.osfans.trime.keyboard.TightTextView(this);
-        String colorStyle=pressed?style+".pressed":style;
+        TextView t=style.endsWith(".hint.left")||style.endsWith(".hint.right")?new TextView(this):new com.osfans.trime.keyboard.TightTextView(this);
+        t.setIncludeFontPadding(true);String colorStyle=pressed?style+".pressed":style;
         int textColor=tint(colorStyle,"text_color",Color.BLACK);
         float textSize=Math.max(1,Math.min(80,metric(style,"text_size",8)));
-        setIcon(t,label,textColor,Math.max(1,dp(textSize)));t.setSingleLine(true);
+        setIcon(t,label,tint(style,"text_color",Color.BLACK),Math.max(1,dp(Math.max(1,metric(style,"text_size",18)))));t.setSingleLine(true);
         t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP,textSize);
         t.setTextColor(textColor);
         t.setGravity(gravity);t.setTranslationX(dp(metric(style,"offset_x",0)));t.setTranslationY(dp(metric(style,"offset_y",0)));
@@ -733,11 +1008,12 @@ public class EditorActivity extends Activity {
     // Each sample uses one kind of hint so their positions never obscure one another.
     private FrameLayout decoratedKey(String label,String style,int kind,boolean pressed,boolean draftHint){
         FrameLayout key=new FrameLayout(this);key.setClipChildren(false);key.setClipToPadding(false);
-        TextView face=keyView(label,pressed?style+".pressed":style);key.addView(face,new FrameLayout.LayoutParams(-1,-1));
+        TextView face=buttonFace(label,style,pressed);key.addView(face,new FrameLayout.LayoutParams(-1,-1));
         int top=android.view.Gravity.TOP|android.view.Gravity.CENTER_HORIZONTAL,bottom=android.view.Gravity.BOTTOM|android.view.Gravity.CENTER_HORIZONTAL;
         if(kind==1&&(draftHint||configured(style,"long_click")))addSampleHint(key,"1",style+".long_click",top,pressed,true);
         if(kind==2&&(draftHint||configured(style,"hint")))addSampleHint(key,"注",style+".hint",bottom,pressed,true);
         if(kind==3){String h=style+".hint";String[] dirs={"up","down","left","right"};String[] labels={"↑","↓","←","→"};int[] grav={top,bottom,android.view.Gravity.LEFT|android.view.Gravity.CENTER_VERTICAL,android.view.Gravity.RIGHT|android.view.Gravity.CENTER_VERTICAL};for(int i=0;i<4;i++)if(draftHint||configured(h,dirs[i]))addSampleHint(key,labels[i],h+"."+dirs[i],grav[i],pressed,false);}
+        if(pressed&&PaletteCapabilities.keyboardEffects(style))previewMask(key,style);
         return key;
     }
     private void addKeyboardKey(LinearLayout row,String label,String style,int kind,boolean pressed,boolean popup){
@@ -748,22 +1024,29 @@ public class EditorActivity extends Activity {
         FrameLayout key=decoratedKey(label,style,kind,pressed,draftHint);
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,height,1);lp.setMargins(size(style,"margins.left",1,24),size(style,"margins.top",2,24),size(style,"margins.right",1,24),size(style,"margins.bottom",2,24));row.addView(key,lp);
         if(popup&&configured(style,"preview")){
-            String p=style+".preview";TextView bubble=keyView(label,p);bubble.setGravity(android.view.Gravity.CENTER);bubble.setPadding(0,0,0,0);bubble.setTranslationX(0);bubble.setTranslationZ(Math.max(dp(24),key.getChildAt(0).getZ()+dp(2)));
+            String p=style+".preview";TextView bubble=popupFace(label,style);bubble.setGravity(android.view.Gravity.CENTER);bubble.setPadding(0,0,0,0);bubble.setTranslationX(0);bubble.setTranslationZ(Math.max(dp(24),key.getChildAt(0).getZ()+dp(2)));
             int w=inherited(p,"width").isnil()?-1:Math.max(1,size(p,"width",64,240));int h=inherited(p,"height").isnil()?height:Math.max(1,size(p,"height",64,240));
             key.addView(bubble,new FrameLayout.LayoutParams(w,h,android.view.Gravity.CENTER));bubble.setTranslationY(-h*bubble.getScaleY()*1.01f);bubble.setVisibility(View.VISIBLE);
             key.setOnClickListener(v->bubble.setVisibility(bubble.getVisibility()==View.VISIBLE?View.INVISIBLE:View.VISIBLE));key.setContentDescription("按键弹出提示，点击切换");key.setElevation(dp(25));
             row.setElevation(dp(25));
         }
     }
-    private void keyboardSample(LinearLayout parent,String style,boolean popupOnly){
-        LinearLayout keyboard=column();keyboard.setPadding(dp(3),dp(3),dp(3),dp(3));applyKeyboardBackground(keyboard,model.get("style").optjstring("keyboard"),0xffdddddd);keyboard.setClipChildren(false);keyboard.setClipToPadding(false);parent.addView(keyboard);
-        for(String letters:new String[]{"QWERTYUIOP","ASDFGHJKL","ZXCVBNM"}){
-            LinearLayout row=new LinearLayout(this);row.setClipChildren(false);row.setClipToPadding(false);keyboard.addView(row);
-            for(char c:letters.toCharArray()){int kind=c=='Q'?1:c=='W'?2:c=='E'?3:0;addKeyboardKey(row,String.valueOf(c),popupOnly&&c=='G'?style:"key",kind,c=='G',c=='G');}
-        }
+    private LinearLayout sampleKeyboardContainer(LinearLayout parent){
+        LinearLayout keyboard=column();keyboard.setPadding(dp(3),dp(3),dp(3),dp(3));applyKeyboardBackground(keyboard,model.get("style").optjstring("keyboard"),0xffdddddd);keyboard.setClipChildren(false);keyboard.setClipToPadding(false);parent.addView(keyboard);return keyboard;
+    }
+    private void sampleKeyboardRow(LinearLayout keyboard,String letters,String style,boolean popupOnly){
+        LinearLayout row=new LinearLayout(this);row.setClipChildren(false);row.setClipToPadding(false);keyboard.addView(row);
+        for(char c:letters.toCharArray()){int kind=c=='Q'?1:c=='W'?2:c=='E'?3:0;addKeyboardKey(row,String.valueOf(c),popupOnly&&c=='G'?style:"key",kind,c=='G',c=='G');}
+    }
+    private void finishSampleKeyboard(LinearLayout parent,LinearLayout keyboard,String style,boolean popupOnly){
         LinearLayout row=new LinearLayout(this);keyboard.addView(row);sample(row,"123","functional");sample(row,"空格","space");sample(row,"回车","enter");
         if(!popupOnly){StringBuilder missing=new StringBuilder();if(!configured("key","hint"))missing.append("单助记 ");for(String dir:new String[]{"up","down","left","right"})if(!configured("key.hint",dir))missing.append(propertyTitle(dir)).append("助记 ");if(missing.length()>0)text(parent,"未配置："+missing+"（可在对应属性中预览并添加）");}
         if(popupOnly&&!configured(style,"preview"))text(parent,"当前样式未启用弹出提示，设置 Preview 属性后显示。");
+    }
+    private void keyboardSample(LinearLayout parent,String style,boolean popupOnly){
+        LinearLayout keyboard=sampleKeyboardContainer(parent);
+        for(String letters:new String[]{"QWERTYUIOP","ASDFGHJKL","ZXCVBNM"})sampleKeyboardRow(keyboard,letters,style,popupOnly);
+        finishSampleKeyboard(parent,keyboard,style,popupOnly);
     }
     private void popupSample(LinearLayout parent,String style,String label){keyboardSample(parent,style,true);}
     private boolean hintFocus(LinearLayout parent,String path){
@@ -787,29 +1070,35 @@ public class EditorActivity extends Activity {
         text(parent,"工具栏 · 收起键盘");
         LinearLayout row=new LinearLayout(this);row.setGravity(android.view.Gravity.CENTER_VERTICAL);row.setBackground(ui.shape(color("toolbar.background",color("candidate.background",Color.LTGRAY)),8,0));parent.addView(row);
         int h=Math.max(dp(20),size("candidate","height",42,180));
-        LinearLayout items=new LinearLayout(this);row.addView(items,new LinearLayout.LayoutParams(0,h,1));
-        LuaValue toolbarKeys=value(palette,"toolbar.keys");
+        HorizontalScrollView keyScroll=new HorizontalScrollView(this);keyScroll.setHorizontalScrollBarEnabled(false);row.addView(keyScroll,new LinearLayout.LayoutParams(0,h,1));
+        LinearLayout items=new LinearLayout(this);keyScroll.addView(items,new FrameLayout.LayoutParams(-2,-1));
+        LuaValue toolbarKeys=styleButtons(StyleButtonLists.TOOLBAR);
         if(toolbarKeys.istable()){
             for(int i=1;i<=Math.min(toolbarKeys.length(),24);i++){
-                LuaValue entry=toolbarKeys.get(i);String label=eventLabel(entry);
-                String keyStyle=entry.istable()?entry.get("style").optjstring("toolbar.key"):"toolbar.key";
-                if(!label.isEmpty())sample(items,label,keyStyle);
+                LuaValue entry=toolbarKeys.get(i);String label=styleButtonLabel(StyleButtonLists.TOOLBAR,entry);
+                boolean eventKey=entry.istable()&&!entry.get("options").istable()&&!entry.get("click").isnil();
+                String keyStyle=entry.istable()&&!entry.get("options").istable()?entry.get("style").optjstring("toolbar.key"):"toolbar.key";
+                if(!value(palette,keyStyle).istable())keyStyle="toolbar.key";
+                FrameLayout face=new FrameLayout(this);face.setMinimumWidth(h);face.setClipChildren(false);face.setClipToPadding(false);
+                TextView labelView=buttonFace(label,keyStyle,false);labelView.setMinimumWidth(h);face.addView(labelView,new FrameLayout.LayoutParams(-2,-1));
+                if(eventKey)actualHints(face,entry,keyStyle);
+                LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,h);lp.setMargins(size(keyStyle,"margins.left",0,40),size(keyStyle,"margins.top",0,40),size(keyStyle,"margins.right",0,40),size(keyStyle,"margins.bottom",0,40));items.addView(face,lp);
             }
-        }else for(String s:new String[]{"菜单","中/英","剪贴板"})sample(items,s,"toolbar.key");
+        }
         LuaValue hide=new PaletteResolver(palette).value("toolbar.hide");String label=hide.istable()?hide.get("text").optjstring("▽"):hide.optjstring("▽");
         String path=hide.istable()?"toolbar.hide":"toolbar.key";
-        TextView normal=keyView(label,path);normal.setMinimumWidth(h);normal.setContentDescription("收起键盘（预览）");row.addView(normal,new LinearLayout.LayoutParams(-2,h));
-        final TextView pressedSample=keyView(label,path+".pressed");
+        TextView normal=buttonFace(label,path,false);normal.setMinimumWidth(h);normal.setContentDescription("收起键盘（预览）");row.addView(normal,new LinearLayout.LayoutParams(-2,h));
+        final TextView pressedSample=buttonFace(label,path,true);
         normal.setOnClickListener(v->{int index=row.indexOfChild(v);TextView pressed=pressedSample;pressed.setMinimumWidth(h);row.removeView(v);row.addView(pressed,index,new LinearLayout.LayoutParams(-2,h));pressed.postDelayed(()->{if(pressed.getParent()==row){row.removeView(pressed);row.addView(normal,index,new LinearLayout.LayoutParams(-2,h));}},350);});
         if(previewPath.startsWith("toolbar.hide.pressed")){TextView pressed=pressedSample;pressed.setMinimumWidth(h);row.removeView(normal);row.addView(pressed,new LinearLayout.LayoutParams(-2,h));}
     }
     private void appendCompositionSpan(TextView window,android.text.SpannableStringBuilder out,String s,String path,boolean highlight){
         if(s.isEmpty())return;int start=out.length();out.append(s);int end=out.length();int flags=android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE;
         out.setSpan(new android.text.style.ForegroundColorSpan(tint(path,"text_color",Color.BLACK)),start,end,flags);
-        out.setSpan(new android.text.style.AbsoluteSizeSpan(Math.max(1,dp(metric(path,"text_size",18)))),start,end,flags);
+        out.setSpan(new android.text.style.AbsoluteSizeSpan(Math.max(1,dp(metric(path.equals("composition.key.pressed.hint")?"composition.key.hint":path,"text_size",18)))),start,end,flags);
         if(highlight)out.setSpan(new android.text.style.BackgroundColorSpan(tint(path,"background",Color.LTGRAY)),start,end,flags);
         if(path.equals("composition.key")||path.startsWith("composition.key.")){
-            File dir=previewStyleDir();android.content.res.Resources res=getResources();int color=tint(path,"text_color",Color.BLACK),pixels=Math.max(1,dp(metric(path,"text_size",18)));
+            File dir=previewStyleDir();android.content.res.Resources res=getResources();int color=tint(path,"text_color",Color.BLACK),pixels=Math.max(1,dp(metric(path.equals("composition.key.pressed.hint")?"composition.key.hint":path,"text_size",18)));
             resource(()->previewIcons.span(res,dir,s,color,pixels),span->{if(span instanceof android.text.Spanned){android.text.Spanned sp=(android.text.Spanned)span;for(android.text.style.ImageSpan image:sp.getSpans(0,sp.length(),android.text.style.ImageSpan.class))out.setSpan(image,start+sp.getSpanStart(image),start+sp.getSpanEnd(image),flags);window.setText(out);}});
         }
     }
@@ -836,11 +1125,79 @@ public class EditorActivity extends Activity {
         else {appendCompositionSpan(window,out,"ni ","composition",false);appendCompositionSpan(window,out,"hao","composition.pressed",true);out.append("\n");appendCompositionSpan(window,out,"1. 你好 ","candidate.pressed",true);if(!compact)appendCompositionSpan(window,out,"2. 世界","candidate",false);}
         window.setText(out);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2);String pos=style.get("position").optjstring("fixed");lp.gravity=pos.contains("right")?android.view.Gravity.RIGHT:android.view.Gravity.LEFT;int spacing=compact?Math.min(dp(2),size("composition","spacing",1,80)):size("composition","spacing",1,80);lp.setMargins(0,spacing,0,spacing);parent.addView(window,lp);
     }
-    private void previewFocused(LinearLayout l){String popup=previewStyle(previewPath);if(popup!=null){popupSample(l,popup,popup.equals("space")?"空格":"G");return;}if(inGroup(previewPath,"toolbar")){toolbarSample(l);return;}if(inGroup(previewPath,"composition")){compositionSample(l);return;}if(inGroup(previewPath,"preedit")){LinearLayout pre=new LinearLayout(this);l.addView(pre);sample(pre,"ni hao","preedit");return;}if(inGroup(previewPath,"candidate")){compositionSample(l);return;}if(hintFocus(l,previewPath))return;String focus=previewPath;int dot=focus.lastIndexOf('.');if(dot>=0)focus=focus.substring(0,dot);while(focus.contains(".")&&(focus.endsWith(".padding")||focus.endsWith(".margins")||!value(palette,focus).istable()))focus=focus.substring(0,focus.lastIndexOf('.'));if(focus.equals("keyboard")||focus.equals("height")||focus.equals("background")){previewSample(l);return;}text(l,"实时预览 · "+propertyTitle(focus));LinearLayout row=new LinearLayout(this);l.addView(row);sample(row,"示例 Aa",focus);sample(row,"按下",focus+".pressed");}
+    private boolean buttonFocus(LinearLayout parent,String path){
+        String style=PaletteCapabilities.buttonOwner(path);
+        if(style==null)return false;
+        if(path.contains(".hint.")||path.contains(".long_click.")&&!path.contains("sound_")&&!path.contains("vibration_"))return hintFocus(parent,path);
+        String label=style.equals("toolbar.hide")||style.equals("candidate.key")?inherited(style,"text").optjstring("▽"):style.equals("space")?"空格":style.startsWith("candidate.expanded")?"△":"Aa";
+        text(parent,"左：正常状态　右：按下状态");LinearLayout row=new LinearLayout(this);parent.addView(row);
+        int h=Math.max(dp(30),size("candidate","height",42,180));
+        for(boolean pressed:new boolean[]{false,true}){FrameLayout key=decoratedKey(label,style,0,pressed,false);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,h,1);lp.setMargins(dp(2),dp(2),dp(2),dp(2));row.addView(key,lp);}return true;
+    }
+    private void previewFocused(LinearLayout l){if(inGroup(previewPath,"symbol.tool_bar")||inGroup(previewPath,"clipboard.tool_bar")){styleButtonPreview(l,previewPath.startsWith("symbol")?"symbol.tool_bar.keys":"clipboard.tool_bar.keys");return;}String popup=previewStyle(previewPath);if(popup!=null){popupSample(l,popup,popup.equals("space")?"空格":"G");return;}if(inGroup(previewPath,"toolbar")){if(previewPath.startsWith("toolbar.key.hint.")||previewPath.startsWith("toolbar.key.long_click.")){if(buttonFocus(l,previewPath))return;}toolbarSample(l);return;}if(inGroup(previewPath,"candidate")&&!inGroup(previewPath,"candidate.expanded")){candidateBarSample(l);return;}if(buttonFocus(l,previewPath))return;if(inGroup(previewPath,"candidate.expanded")){expandedCandidateSample(l);return;}if(inGroup(previewPath,"composition")){compositionSample(l);return;}if(inGroup(previewPath,"preedit")){LinearLayout pre=new LinearLayout(this);l.addView(pre);sample(pre,"ni hao","preedit");return;}if(hintFocus(l,previewPath))return;String focus=previewPath;int dot=focus.lastIndexOf('.');if(dot>=0)focus=focus.substring(0,dot);while(focus.contains(".")&&(focus.endsWith(".padding")||focus.endsWith(".margins")||!value(palette,focus).istable()))focus=focus.substring(0,focus.lastIndexOf('.'));if(focus.equals("keyboard")||focus.equals("height")||focus.equals("background")){previewSample(l);return;}text(l,"实时预览 · "+propertyTitle(focus));LinearLayout row=new LinearLayout(this);l.addView(row);sample(row,"示例 Aa",focus);sample(row,"按下",focus+".pressed");}
     private void previewSample(LinearLayout l){previewKeyboardOverview(l);previewGroupDetail(l);}
-    private void previewKeyboardOverview(LinearLayout l){LinearLayout b=column();b.setBackground(ui.shape(color("background",Color.LTGRAY),14,0));l.addView(b);compositionSample(b,true);toolbarSample(b);LinearLayout pre=new LinearLayout(this);b.addView(pre);sample(pre,"ni hao","preedit");LinearLayout cand=new LinearLayout(this);b.addView(cand);sample(cand,"你好","candidate");sample(cand,"世界","candidate.pressed");sample(cand,"注释","candidate.comment");keyboardSample(b,"key",false);}
-    private void previewGroupDetail(LinearLayout l){String focus=previewPath;while(focus.contains(".")&&!value(palette,focus).istable())focus=focus.substring(0,focus.lastIndexOf('.'));if(!focus.equals("基本信息")&&!inGroup(focus,"toolbar")&&!inGroup(focus,"composition")&&value(palette,focus).istable()){if(hintFocus(l,previewPath))return;text(l,"属性样例 · "+propertyTitle(focus));LinearLayout detail=new LinearLayout(this);l.addView(detail);sample(detail,"示例 Aa",focus);sample(detail,"按下",focus+".pressed");} }
-    private void sample(LinearLayout r,String label,String style){int h=style.equals("candidate")||style.equals("candidate.pressed")||style.equals("candidate.comment")?size("candidate","height",42,100):style.equals("key")||style.equals("key.pressed")||style.equals("space")||style.equals("functional")||style.equals("enter")?Math.max(dp(20),size("keyboard","height",240,600)/4):size(style,"height",42,180);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,Math.max(dp(12),h),1);lp.setMargins(size(style,"margins.left",1,24),size(style,"margins.top",2,24),size(style,"margins.right",1,24),size(style,"margins.bottom",2,24));r.addView(keyView(label,style),lp);}
+    // CandidateView and ToolbarView occupy the same slot at runtime. This sample
+    // deliberately renders only CandidateView, never Composition or inline preedit.
+    private TextView candidateSampleText(String label,String style,boolean selected,int defaultSize,int defaultColor){
+        TextView t=new TextView(this);
+        t.setText(label);t.setSingleLine(true);t.setGravity(android.view.Gravity.CENTER);
+        t.setIncludeFontPadding(true);t.setPadding(0,0,0,0);
+        t.setTextSize(android.util.TypedValue.COMPLEX_UNIT_DIP,Math.max(1,Math.min(80,metric(style,"text_size",defaultSize))));
+        t.setTextColor(tint(selected?style+".pressed":style,"text_color",defaultColor));
+        LuaValue font=inherited(style,"font");if(font.istable())font=font.get(1);
+        if(font.type()==LuaValue.TSTRING)loadFont(t,font.tojstring());
+        return t;
+    }
+    private LinearLayout candidateSampleItem(String word,String comment,boolean selected,boolean expanded){
+        LinearLayout item=column();item.setGravity(android.view.Gravity.CENTER);
+        item.setPadding(dp(12),dp(expanded?6:1),dp(12),dp(expanded?6:1));
+        TextView note=candidateSampleText(comment,"candidate.comment",selected,12,0xff444444);
+        TextView text=candidateSampleText(word,"candidate",selected,22,Color.BLACK);
+        note.setLineSpacing(0,0);text.setLineSpacing(0,0.1f);
+        if(selected)previewBackground(item,"candidate.pressed",Color.TRANSPARENT);
+        if(expanded){item.addView(note,new LinearLayout.LayoutParams(-2,-2));item.addView(text,new LinearLayout.LayoutParams(-2,-2));}
+        else{item.addView(note,new LinearLayout.LayoutParams(-2,0,note.getTextSize()));item.addView(text,new LinearLayout.LayoutParams(-2,0,text.getTextSize()));}
+        return item;
+    }
+    private void candidateBarSample(LinearLayout parent){
+        int total=size("candidate","height",48,800);
+        int elevation=Math.min(total,size("candidate","elevation",2,100));
+        int height=Math.max(0,total-elevation);
+        LinearLayout row=new LinearLayout(this);row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setClipChildren(false);row.setClipToPadding(false);
+        previewBackground(row,"candidate",0xffdddddd);row.setElevation(elevation);
+        if(Build.VERSION.SDK_INT>=28){int shadow=tint("candidate","shadow_color",0);if(shadow!=0){row.setOutlineAmbientShadowColor(shadow);row.setOutlineSpotShadowColor(shadow);}}
+        LinearLayout.LayoutParams outer=new LinearLayout.LayoutParams(-1,height);outer.bottomMargin=elevation;parent.addView(row,outer);
+        android.widget.HorizontalScrollView scroll=new android.widget.HorizontalScrollView(this);scroll.setHorizontalScrollBarEnabled(false);scroll.setFillViewport(false);
+        row.addView(scroll,new LinearLayout.LayoutParams(0,height,1));
+        LinearLayout words=new LinearLayout(this);words.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        scroll.addView(words,new android.widget.FrameLayout.LayoutParams(-2,-1));
+        String[] labels={"你好","世界","输入法","主题"};String[] notes={"ni hao","shi jie","shu ru fa","zhu ti"};
+        for(int i=0;i<labels.length;i++)words.addView(candidateSampleItem(labels[i],notes[i],i==0,false),new LinearLayout.LayoutParams(-2,-1));
+        String label=inherited("candidate.key","text").optjstring("▽");
+        TextView more=buttonFace(label,"candidate.key",inGroup(previewPath,"candidate.key.pressed"));
+        more.setMinimumWidth(height);more.setContentDescription("更多候选（预览）");row.addView(more,new LinearLayout.LayoutParams(-2,height));
+    }
+    private void expandedCandidateSample(LinearLayout parent){
+        text(parent,"展开候选面板 · 样式示例");
+        LinearLayout panel=column();previewBackground(panel,"candidate.expanded",Color.TRANSPARENT);parent.addView(panel);
+        for(String[] line:new String[][]{{"你好","世界","输入法"},{"主题","配色","键盘"}}){
+            LinearLayout row=new LinearLayout(this);panel.addView(row);
+            for(String word:line)row.addView(candidateSampleItem(word,"abc",false,true),new LinearLayout.LayoutParams(0,-2,1));
+        }
+        styleButtonPreview(panel,"candidate.expanded.tool_bar.keys");
+        if(inGroup(previewPath,"candidate.expanded.filter_bar")){
+            String style=inGroup(previewPath,"candidate.expanded.filter_bar")?"candidate.expanded.filter_bar":"candidate.expanded.tool_bar";
+            LinearLayout row=new LinearLayout(this);panel.addView(row);sample(row,"筛选 / 工具",style);
+        }
+    }
+    private void previewOverviewCandidates(LinearLayout b){
+        LinearLayout pre=new LinearLayout(this);b.addView(pre);sample(pre,"ni hao","preedit");
+        candidateBarSample(b);
+    }
+    private void previewKeyboardOverview(LinearLayout l){LinearLayout b=column();b.setBackground(ui.shape(color("background",Color.LTGRAY),14,0));l.addView(b);compositionSample(b,true);toolbarSample(b);previewOverviewCandidates(b);keyboardSample(b,"key",false);}
+    private void previewGroupDetail(LinearLayout l){if(previewPath.equals("symbol")||previewPath.equals("clipboard")){styleButtonPreview(l,previewPath+".tool_bar.keys");}if(inGroup(previewPath,"candidate")){if(inGroup(previewPath,"candidate.expanded"))expandedCandidateSample(l);else candidateBarSample(l);return;}String focus=previewPath;while(focus.contains(".")&&!value(palette,focus).istable())focus=focus.substring(0,focus.lastIndexOf('.'));if(!focus.equals("基本信息")&&!inGroup(focus,"toolbar")&&!inGroup(focus,"composition")&&value(palette,focus).istable()){if(hintFocus(l,previewPath))return;text(l,"属性样例 · "+propertyTitle(focus));LinearLayout detail=new LinearLayout(this);l.addView(detail);sample(detail,"示例 Aa",focus);sample(detail,"按下",focus+".pressed");} }
+    private void sample(LinearLayout r,String label,String style){int h=style.equals("candidate")||style.equals("candidate.pressed")||style.equals("candidate.comment")?size("candidate","height",42,100):style.equals("key")||style.equals("key.pressed")||style.equals("space")||style.equals("functional")||style.equals("enter")?Math.max(dp(20),size("keyboard","height",240,600)/4):size(style,"height",42,180);LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,Math.max(dp(12),h),1);lp.setMargins(size(style,"margins.left",1,24),size(style,"margins.top",2,24),size(style,"margins.right",1,24),size(style,"margins.bottom",2,24));String owner=style.endsWith(".pressed")?style.substring(0,style.length()-8):style;r.addView(PaletteCapabilities.isButton(owner)?buttonFace(label,owner,style.endsWith(".pressed")):keyView(label,style),lp);}
     private static final String NEW_KEY = "{click=\"a\"}";
     private static class LayoutEntry {
         final LuaValue config; final String path, label; final boolean root;
@@ -1003,22 +1360,25 @@ public class EditorActivity extends Activity {
         keyboardKeyStyles.add(style);
         FrameLayout view=new FrameLayout(this);view.setClipChildren(false);view.setClipToPadding(false);
         FrameLayout face=new FrameLayout(this);face.setClipChildren(false);face.setClipToPadding(false);
-        TextView mainKey=keyView(label,style);face.addView(mainKey,new FrameLayout.LayoutParams(-1,-1));
+        TextView mainKey=buttonFace(label,style,false);face.addView(mainKey,new FrameLayout.LayoutParams(-1,-1));
         int elevation=size(style,"elevation",0,40);
         FrameLayout.LayoutParams faceParams=new FrameLayout.LayoutParams(-1,-1);
         faceParams.setMargins(size(style,"margins.left",0,40),size(style,"margins.top",0,40),size(style,"margins.right",0,40),size(style,"margins.bottom",0,40));
         if(inherited(style,"margins").isnil())faceParams.setMargins(elevation/3,elevation/3,elevation/3,elevation/3*2);
         view.addView(face,faceParams);
+        actualHints(face,key,style);
+        if(label.isEmpty())view.setAlpha(.4f);
+        view.setContentDescription(label.isEmpty()?"空白按键":label);
+        view.setOnClickListener(v->editKey(key,p,percent));
+        view.setOnLongClickListener(v->{showKeyActions(key,entry,index,percent);return true;});return view;
+    }
+    private void actualHints(FrameLayout face,LuaValue key,String style){
         int top=android.view.Gravity.TOP|android.view.Gravity.CENTER_HORIZONTAL,bottom=android.view.Gravity.BOTTOM|android.view.Gravity.CENTER_HORIZONTAL;
         String longLabel=key.get("long_click").isnil()?"":key.get("hint_long").optjstring(eventLabel(key.get("long_click")));
         if(!longLabel.isEmpty()&&configured(style,"long_click"))addSampleHint(face,longLabel,style+".long_click",top,false,true);
         String hint=key.get("hint").optjstring("");if(!hint.isEmpty()&&configured(style,"hint"))addSampleHint(face,hint,style+".hint",bottom,false,true);
         String[] dirs={"up","down","left","right"};int[] grav={top,bottom,android.view.Gravity.LEFT|android.view.Gravity.CENTER_VERTICAL,android.view.Gravity.RIGHT|android.view.Gravity.CENTER_VERTICAL};
         for(int i=0;i<dirs.length;i++){String dir=dirs[i];String h=key.get("hint_"+dir).optjstring(eventLabel(key.get("swipe_"+dir)));if(!h.isEmpty()&&configured(style+".hint",dir))addSampleHint(face,h,style+".hint."+dir,grav[i],false,false);}
-        if(label.isEmpty())view.setAlpha(.4f);
-        view.setContentDescription(label.isEmpty()?"空白按键":label);
-        view.setOnClickListener(v->editKey(key,p,percent));
-        view.setOnLongClickListener(v->{showKeyActions(key,entry,index,percent);return true;});return view;
     }
     private void showKeyActions(LuaValue key,LayoutEntry entry,int index,boolean percent){
         boolean absolute=entry.path.isEmpty();String path=absolute?"keys":entry.path+".keys";
@@ -1216,7 +1576,8 @@ public class EditorActivity extends Activity {
                 File backup=LuaSourceMerger.commit(draft.target,draft.base,draft.diskPatch,draft.usedPatch,candidate);
                 return new MergeCommit(parsed,backup);
             },result->{baseSource=candidate;source=original="";mergeDraft=null;editingBase=false;visual=true;install(result.parsed);render();updateEditorSubtitle(true);
-                new AlertDialog.Builder(this).setTitle("合并完成").setMessage("补丁已合并到原始源码，旧补丁已停用。重新加载主题后生效。\n\n备份目录：\n"+result.backup.getAbsolutePath()).setPositiveButton("确定",null).show();
+                String refresh=refreshSavedLua(draft.target);
+                new AlertDialog.Builder(this).setTitle("合并完成").setMessage("补丁已合并到原始源码，旧补丁已停用。"+refresh+"\n\n备份目录：\n"+result.backup.getAbsolutePath()).setPositiveButton("确定",null).show();
             })).show();
     }
     /** The existing TextWarrior editor owns its scroll area; never nest it inside ScrollView. */
@@ -1271,7 +1632,49 @@ public class EditorActivity extends Activity {
                 if(moved&&!committed&&!patchBackup.renameTo(sidecar))throw new IOException("无法恢复旧补丁，备份位于："+patchBackup.getAbsolutePath());
             }
             return parsed;
-        },parsed->{baseSource=input;if(!patch.trim().isEmpty())source=original="";install(parsed);updateEditorSubtitle(true);Toast.makeText(this,patch.trim().isEmpty()?"原始源码已保存；重新加载主题后生效":"原始源码已保存，旧补丁已备份并移除；重新加载主题后生效",Toast.LENGTH_LONG).show();});
+        },parsed->{baseSource=input;if(!patch.trim().isEmpty())source=original="";install(parsed);updateEditorSubtitle(true);Toast.makeText(this,(patch.trim().isEmpty()?"原始源码已保存。":"原始源码已保存，旧补丁已备份并移除。")+refreshSavedLua(target),Toast.LENGTH_LONG).show();});
+    }
+    /** Called on the main thread only after the file transaction succeeds.
+     * Match the actual base file, not merely its name (many themes use main.lua).
+     * Never switch the user's current theme/style just to reload an edited file. */
+    private String refreshSavedLua(File saved){
+        try{
+            String theme=Config.getTheme();
+            String style=Config.getStyle();
+            File activeTheme=new File(Config.getThemeDir(theme),"main.lua");
+            File activeStyle=new File(new File(new File(Config.getThemeDir(theme),"styles"),style),"main.lua");
+            File keyboards=new File(Config.getThemeDir(theme),"keyboards");
+            File path=saved.getAbsoluteFile();
+            boolean reloadTheme=mode==0&&path.equals(activeTheme.getAbsoluteFile())
+                    ||mode==2&&keyboards.getAbsoluteFile().equals(path.getParentFile());
+            boolean reloadStyle=mode==1&&path.equals(activeStyle.getAbsoluteFile());
+            if(!reloadTheme&&!reloadStyle)return "当前未使用此配置，切换后生效。";
+            TrimeService service=TrimeService.getInstance();
+            if(service==null||service.getRootView()==null)return "下次启动输入法时生效。";
+            // These existing service methods rebuild Android Views and must run on main.
+            if(reloadTheme)service.setTheme(theme);else service.setStyle(style);
+            return reloadTheme?"已刷新当前主题。":"已刷新当前配色样式。";
+        }catch(Exception e){
+            android.util.Log.e("EditorActivity","Saved Lua refresh failed",e);
+            return "配置已保存，但刷新失败，请重新加载主题。";
+        }
+    }
+    /** Deployment is explicit, and uses the same dialog as the launcher. */
+    private void confirmSchemaDeploy(File saved){
+        if(destroyed||isFinishing())return;
+        new AlertDialog.Builder(this).setTitle("方案已保存")
+            .setMessage("是否立即部署 Rime 输入方案，使修改生效？")
+            .setNegativeButton("稍后部署",null)
+            .setPositiveButton("立即部署",(d,w)->{
+                if(!new File(Config.getUserDataDir()).getAbsoluteFile().equals(saved.getAbsoluteFile().getParentFile())){
+                    Toast.makeText(this,"当前方案组已切换，请切回编辑的方案组后部署。",Toast.LENGTH_LONG).show();return;
+                }
+                TrimeService service=TrimeService.getInstance();
+                if(service==null||service.getRime()==null||!service.getRime().isReady()){
+                    Toast.makeText(this,"方案已保存，请先启动输入法，待初始化完成后再部署。",Toast.LENGTH_LONG).show();return;
+                }
+                new DeployDialog(this).show();
+            }).show();
     }
     private void save(){
         if(file==null||busy)return;if(editingBase){saveBaseSource();return;}syncRaw();final boolean lua=mode!=3;final File base=file,target=lua?LuaPatchManager.file(base):base;
@@ -1280,7 +1683,8 @@ public class EditorActivity extends Activity {
             if(lua){
                 if(!read(base).equals(baseText))throw new IOException("原始文件已变化，请重新打开后编辑");
                 if(!LuaPatchManager.read(base).equals(previous))throw new IOException("补丁文件已被其他程序修改，请重新打开后编辑");
-                evaluatePatched(baseText,input);
+                if(mode==1&&input.equals(previous)&&(!input.isEmpty()||!target.exists()))return input;
+                if(mode==1)paletteEdits.evaluate(baseText,input);else evaluatePatched(baseText,input);
                 if(input.equals(previous)&&(!input.isEmpty()||!target.exists()))return input;
             }
             File parent=target.getParentFile();if(!parent.exists()&&!parent.mkdirs())throw new IOException("无法创建目录");
@@ -1292,6 +1696,6 @@ public class EditorActivity extends Activity {
                 else if(!tmp.renameTo(target))throw new IOException("无法替换文件");
             }finally{tmp.delete();}
             return input;
-        },saved->{source=original=saved;if(codeEditor!=null&&!codeEditor.getText().toString().equals(saved))codeEditor.setText(saved);updateEditorSubtitle(true);Toast.makeText(this,lua?"补丁已保存；重新加载主题后生效":"已保存，请部署",Toast.LENGTH_LONG).show();});
+        },saved->{source=original=saved;if(codeEditor!=null&&!codeEditor.getText().toString().equals(saved))codeEditor.setText(saved);updateEditorSubtitle(true);if(lua)Toast.makeText(this,"补丁已保存。"+refreshSavedLua(base),Toast.LENGTH_LONG).show();else confirmSchemaDeploy(base);});
     }
 }

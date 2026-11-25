@@ -1,10 +1,14 @@
 package com.osfans.trime.editor;
 
 import java.util.*;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.util.regex.Pattern;
+import com.osfans.trime.core.SchemaItem;
 
 /** Conservative source-span reader. Never serializes the complete YAML document.
  * Unsupported YAML constructs are opaque; only recognized spans can be changed. */
-final class SchemaDocument {
+public final class SchemaDocument {
     enum Kind { MAP, LIST, STRING, BOOL, INT, NUMBER, NULL, EMPTY, OPAQUE }
     static final class Node {
         final String key; final Node parent; final int indent, start;
@@ -83,4 +87,76 @@ final class SchemaDocument {
     private String splice(int a,int b,String s){return source.substring(0,a)+s+source.substring(b);}
     List<Node> all(){List<Node> out=new ArrayList<>();walk(root,out);return out;}
     private static void walk(Node n,List<Node> out){for(Node x:n.children){out.add(x);walk(x,out);}}
+
+    private static final long MAX_FILE_BYTES = 8L * 1024 * 1024;
+    private static final int MAX_SECTION_CHARS = 256 * 1024;
+
+    private static String scalar(File file, String section, String field) {
+        if (!file.isFile() || file.length() > MAX_FILE_BYTES) return "";
+        Pattern header = Pattern.compile("^(?:" + Pattern.quote(section) + "|'" + Pattern.quote(section)
+                + "'|\"" + Pattern.quote(section) + "\")[ ]*:(?:[ ]+.*|$)");
+        StringBuilder block = new StringBuilder();
+        boolean found = false, first = true;
+        int scanned = 0;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (Thread.currentThread().isInterrupted()) return "";
+                scanned += line.length() + 1;
+                if (scanned > MAX_FILE_BYTES) return "";
+                if (first && line.startsWith("\uFEFF")) line = line.substring(1);
+                first = false;
+                if (!found) {
+                    if (!header.matcher(line).matches()) continue;
+                    found = true;
+                } else if (!line.trim().isEmpty() && !line.trim().startsWith("#")
+                        && !Character.isWhitespace(line.charAt(0))) {
+                    break;
+                }
+                if (block.length() + line.length() + 1 > MAX_SECTION_CHARS) return "";
+                block.append(line).append('\n');
+            }
+            if (!found) return "";
+            SchemaDocument.Node parent = new SchemaDocument(block.toString()).root.child(section);
+            SchemaDocument.Node node = parent == null ? null : parent.child(field);
+            if (node == null || !node.scalar() || node.kind == SchemaDocument.Kind.NULL || node.value == null) return "";
+            return node.value.trim();
+        } catch (IOException | RuntimeException e) {
+            return "";
+        }
+    }
+
+    private static boolean validId(String id) {
+        return id != null && !id.trim().isEmpty() && id.length() <= 255
+                && !".default".equals(id) && !".".equals(id) && !"..".equals(id)
+                && id.indexOf('/') < 0 && id.indexOf('\\') < 0 && id.indexOf('\0') < 0;
+    }
+
+    private static File[] candidates(File user, File shared, String id) {
+        String file = id + ".schema.yaml";
+        return new File[]{new File(user, "build/" + file), new File(shared, "build/" + file),
+                new File(user, file), new File(shared, file)};
+    }
+
+    private static String name(File user, File shared, String id) {
+        for (File file : candidates(user, shared, id)) {
+            String value = scalar(file, "schema", "name");
+            if (!value.isEmpty()) return value;
+        }
+        return "";
+    }
+
+    /** A hint for the launcher, not proof that the engine has selected the schema. */
+    public static SchemaItem lastUsed(File user, File shared, String savedId) {
+        String recent = scalar(new File(user, "user.yaml"), "var", "previously_selected_schema");
+        if (validId(recent)) return new SchemaItem(recent, name(user, shared, recent));
+        if (validId(savedId)) {
+            // select_schema_id is global in older versions. Only use it when a matching
+            // configuration is available in this group or the shared data directory.
+            for (File file : candidates(user, shared, savedId)) {
+                if (file.isFile()) return new SchemaItem(savedId, name(user, shared, savedId));
+            }
+        }
+        return null;
+    }
 }

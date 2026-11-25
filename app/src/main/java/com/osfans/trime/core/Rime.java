@@ -22,11 +22,11 @@ import com.osfans.trime.TrimeApplication;
 import com.osfans.trime.data.opencc.OpenCCDictManager;
 import com.osfans.trime.util.Function;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -181,6 +181,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
                 startRime(false);
                 runnable.run();
                 lifecycleImpl.emitState(RimeLifecycle.State.READY);
+                publishCurrentStatus();
             }
 
             @Override
@@ -221,6 +222,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
         withRimeContext((Callable<String>) () -> {
             Rime.exitRime();
             Rime.startRime(true);
+            publishCurrentStatus();
             return null;
         });
     }
@@ -228,6 +230,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
         withRimeContext((Callable<String>) () -> {
             Rime.exitRime();
             Rime.startRime(false);
+            publishCurrentStatus();
             return null;
         });
     }
@@ -690,7 +693,21 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
         System.loadLibrary("rime_jni");
     }
 
-    private static final List<Consumer<RimeMessage<?>>> rimeMessageHandlers = new ArrayList<>();
+    // Callbacks may register/unregister on the UI thread while native Rime emits messages.
+    private static final CopyOnWriteArrayList<Consumer<RimeMessage<?>>> rimeMessageHandlers = new CopyOnWriteArrayList<>();
+
+    // A quiet startup (or restart) need not emit a native SchemaMessage. Publish the
+    // ordinary StatusMessage once after initialization completes, even without typing.
+    private static void publishCurrentStatus() {
+        try {
+            RimeProto.Status status = getRimeStatus();
+            if (status != null && !TextUtils.isEmpty(status.getSchemaId())) {
+                handleRimeMessage(7, new Object[]{status});
+            }
+        } catch (RuntimeException e) {
+            Log.w("rime", "Unable to publish initial schema status", e);
+        }
+    }
 
     // init
     public static native void startupRime(
@@ -816,8 +833,7 @@ public class Rime implements RimeApi, RimeLifecycleOwner {
     }
 
     public static void registerRimeMessageHandler(Consumer<RimeMessage<?>> handler) {
-        if (rimeMessageHandlers.contains(handler)) return;
-        rimeMessageHandlers.add(handler);
+        rimeMessageHandlers.addIfAbsent(handler);
     }
 
     public static void unregisterRimeMessageHandler(Consumer<RimeMessage<?>> handler) {
