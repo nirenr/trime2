@@ -47,9 +47,9 @@ public final class RimeYamlCompletion {
             if(value){
                 SchemaProperties.Field field=SchemaProperties.get(doc,node.path());
                 if(field!=null&&field.kind==SchemaDocument.Kind.BOOL){add(out,prefix,"true","布尔值","true");add(out,prefix,"false","布尔值","false");}
-                for(String choice:SchemaProperties.choices(node))add(out,prefix,choice,"可选值",choice);
+                for(String choice:SchemaProperties.choices(node))add(out,prefix,choice,SchemaProperties.choiceDescription(choice),choice);
             }else{
-                if(list){for(String choice:SchemaProperties.listChoices(node.parent))add(out,prefix,choice,"引擎组件",choice);}
+                if(list){for(String choice:SchemaProperties.listChoices(node.parent))add(out,prefix,choice,SchemaProperties.choiceDescription(choice),choice);}
                 if(!list||out.isEmpty()){
                     if(list){doc=new SchemaDocument(source.substring(0,line)+before.substring(0,l.start(2))+marker+": null"+source.substring(caret));node=find(doc.root,marker);if(node==null||node.parent==null)return empty;}
                     boolean patch=node.parent.path().equals("patch");
@@ -61,7 +61,7 @@ public final class RimeYamlCompletion {
                     for(Map.Entry<String,SchemaProperties.Field> e:fields.entrySet()){
                         String name=e.getKey();SchemaProperties.Field f=e.getValue();String insert=(patch?"\""+name+"\"":name)+":";
                         if(f.kind!=SchemaDocument.Kind.MAP&&f.kind!=SchemaDocument.Kind.LIST)insert+=" ";
-                        add(out,prefix,name,f.name,insert);
+                        add(out,prefix,name,f.name.equals(f.desc)?f.name:f.name+" · "+f.desc,insert);
                     }
                 }
             }
